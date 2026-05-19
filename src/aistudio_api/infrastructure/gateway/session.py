@@ -247,10 +247,24 @@ class BrowserSession:
         async with self._snapshot_lock:
             return await loop.run_in_executor(self._executor, lambda: self._generate_snapshot_sync(contents))
 
-    async def send_hooked_request(self, *, body: str, timeout_ms: int) -> tuple[int, bytes]:
-        return await self._run_sync(self._send_hooked_request_sync, body, timeout_ms)
+    async def send_hooked_request(
+        self,
+        *,
+        body: str,
+        timeout_ms: int,
+        url: str | None = None,
+        headers: dict[str, str] | None = None,
+    ) -> tuple[int, bytes]:
+        return await self._run_sync(self._send_hooked_request_sync, body, timeout_ms, url, headers)
 
-    async def send_streaming_request(self, *, body: str, timeout_ms: int):
+    async def send_streaming_request(
+        self,
+        *,
+        body: str,
+        timeout_ms: int,
+        url: str | None = None,
+        headers: dict[str, str] | None = None,
+    ):
         """Send a streaming request, yielding ("status", int) and ("chunk", bytes) events."""
         queue = asyncio.Queue()
         loop = asyncio.get_running_loop()
@@ -259,7 +273,7 @@ class BrowserSession:
         def _stream_worker():
             try:
                 log.debug("[stream] worker started")
-                self._send_streaming_request_sync(body, timeout_ms, queue, loop, cancel_event)
+                self._send_streaming_request_sync(body, timeout_ms, queue, loop, cancel_event, url, headers)
                 log.debug("[stream] worker finished")
             except Exception as e:
                 log.debug(f"[stream] worker exception: {e}")
@@ -336,12 +350,16 @@ class BrowserSession:
         queue: asyncio.Queue,
         loop: asyncio.AbstractEventLoop,
         cancel_event: threading.Event,
+        captured_url: str | None = None,
+        captured_headers: dict[str, str] | None = None,
     ):
         """Sync method: sends XHR request and consumes page-side stream events."""
         import time as _t
         _t0 = _t.time()
 
-        page, captured_url, captured_headers = self._prepare_streaming_sync()
+        page = self._ensure_botguard_service_sync()
+        if captured_url is None or captured_headers is None:
+            captured_url, captured_headers = self._get_captured_info()
         log.debug(f"[stream] prep done in {_t.time()-_t0:.1f}s, url={captured_url}")
 
         timeout_s = timeout_ms / 1000
@@ -1035,12 +1053,19 @@ mw:((hash) => {
             raise RuntimeError(f"image upload incomplete: expected={len(image_paths)} uploaded={len(uploaded_ids)}")
         return uploaded_ids
 
-    def _send_hooked_request_sync(self, body: str, timeout_ms: int) -> tuple[int, bytes]:
+    def _send_hooked_request_sync(
+        self,
+        body: str,
+        timeout_ms: int,
+        captured_url: str | None = None,
+        captured_headers: dict[str, str] | None = None,
+    ) -> tuple[int, bytes]:
         import time as _t
         _t0 = _t.time()
         page = self._ensure_botguard_service_sync()
         log.debug(f"[timing] botguard ready in {_t.time()-_t0:.1f}s")
-        captured_url, captured_headers = self._get_captured_info()
+        if captured_url is None or captured_headers is None:
+            captured_url, captured_headers = self._get_captured_info()
 
         # Replay via XHR in browser context (same approach as non-streaming replay_v2)
         timeout_s = timeout_ms / 1000

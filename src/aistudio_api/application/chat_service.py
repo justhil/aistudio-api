@@ -256,7 +256,7 @@ def normalize_anthropic_request(req, tmp_dir: str = "/tmp", tool_context: dict[s
                 function_name = tool_id_to_name.get(block.tool_use_id or "") or block.name or "unknown_function"
                 capture_text = _anthropic_tool_result_text(block.content)
                 text = capture_text or json.dumps(_anthropic_tool_result_response(block.content), ensure_ascii=False)
-                pending_tool_parts.append(AistudioPart(text=f"Tool result for {function_name}: {text}"))
+                pending_tool_parts.append(AistudioPart(text=_anthropic_tool_result_message(function_name, text)))
                 if capture_text:
                     capture_texts.append(capture_text)
             if tool_results and not other_blocks:
@@ -410,6 +410,14 @@ def _anthropic_tool_result_response(content) -> dict[str, Any]:
     if content is None:
         return {"result": ""}
     return {"result": content}
+
+
+def _anthropic_tool_result_message(function_name: str, text: str) -> str:
+    return (
+        f"Tool result for {function_name}:\n{text}\n\n"
+        "Continue the conversation using this tool result. "
+        "Provide the final answer to the user unless another tool call is necessary."
+    )
 
 
 def _anthropic_tool_result_text(content) -> str:

@@ -46,8 +46,12 @@ class RequestCaptureService:
         force_refresh: bool = False,
     ) -> CapturedRequest | None:
         # Image bytes live in rewritten contents, so template capture does not need
-        # the original image list. Only cache plain-text prompts.
-        if not images and not force_refresh:
+        # the original image list. Only cache requests whose snapshot is equivalent
+        # to the plain prompt. Agent/tool requests often share short capture prompts
+        # while carrying different structured contents, so reusing those snapshots
+        # can replay a stale conversation state.
+        can_use_prompt_cache = _can_use_prompt_snapshot_cache(prompt, images, contents)
+        if can_use_prompt_cache and not force_refresh:
             cached = self._snapshot_cache.get(prompt)
             if cached:
                 _snapshot, url, headers, body = cached
@@ -66,7 +70,7 @@ class RequestCaptureService:
             snapshot=snapshot,
         )
         captured = CapturedRequest(url=template.url, headers=template.headers, body=body)
-        if not images:
+        if can_use_prompt_cache:
             self._snapshot_cache.put(prompt, captured.snapshot, captured.url, captured.headers, captured.body)
         logger.info(
             "Hook 拦截成功: model=%s, snapshot=%s chars, body=%s chars",
@@ -89,3 +93,29 @@ class RequestCaptureService:
     def _build_capture_content(self, prompt: str, images: list[str] | None) -> AistudioContent:
         parts = [AistudioPart(text=prompt)]
         return AistudioContent(role="user", parts=parts)
+
+
+def _can_use_prompt_snapshot_cache(
+    prompt: str,
+    images: list[str] | None,
+    contents: list[AistudioContent] | None,
+) -> bool:
+    if images:
+        return False
+    if contents is None:
+        return True
+    if len(contents) != 1:
+        return False
+
+    content = contents[0]
+    if content.role != "user" or len(content.parts) != 1:
+        return False
+
+    part = content.parts[0]
+    return (
+        part.text == prompt
+        and part.inline_data is None
+        and part.file_id is None
+        and part.function_call is None
+        and part.function_response is None
+    )

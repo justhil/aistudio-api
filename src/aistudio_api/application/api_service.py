@@ -325,7 +325,7 @@ async def handle_chat(req: ChatRequest, client: AIStudioClient):
                         rotator.record_rate_limited(account.id)
 
                 # 尝试切换账号
-                if await _try_switch_account():
+                if attempt < max_retries - 1 and await _try_switch_account():
                     logger.info("429 限流，已切换账号，重试 %d/%d", attempt + 1, max_retries)
                     continue
                 else:
@@ -433,7 +433,7 @@ async def handle_anthropic_messages(req: AnthropicMessageRequest, client: AIStud
                         account = runtime_state.account_service.get_active_account() if runtime_state.account_service else None
                         if account:
                             rotator.record_rate_limited(account.id)
-                    if await _try_switch_account():
+                    if attempt < max_retries - 1 and await _try_switch_account():
                         logger.info("Anthropic 429 限流，已切换账号，重试 %d/%d", attempt + 1, max_retries)
                         continue
                     raise HTTPException(429, detail={"message": str(exc), "type": "rate_limit_error"}) from exc
@@ -501,7 +501,7 @@ async def handle_image_generation(req: ImageRequest, client: AIStudioClient):
                         rotator.record_rate_limited(account.id)
 
                 # 尝试切换账号
-                if await _try_switch_account():
+                if attempt < max_retries - 1 and await _try_switch_account():
                     logger.info("Image 429 限流，已切换账号，重试 %d/%d", attempt + 1, max_retries)
                     continue
                 else:
@@ -947,7 +947,7 @@ async def handle_gemini_generate_content(
                         rotator.record_rate_limited(account.id)
 
                 # 尝试切换账号
-                if await _try_switch_account():
+                if attempt < max_retries - 1 and await _try_switch_account():
                     logger.info("Gemini 429 限流，已切换账号，重试 %d/%d", attempt + 1, max_retries)
                     continue
                 else:

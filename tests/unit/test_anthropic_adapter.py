@@ -1,8 +1,9 @@
 from aistudio_api.api.responses import anthropic_message_response
 from aistudio_api.api.schemas import AnthropicMessageRequest
 from aistudio_api.application.chat_service import normalize_anthropic_request
+from aistudio_api.infrastructure.gateway.capture import _can_use_prompt_snapshot_cache
 from aistudio_api.infrastructure.gateway.wire_codec import AistudioWireCodec
-from aistudio_api.infrastructure.gateway.wire_types import AistudioPart
+from aistudio_api.infrastructure.gateway.wire_types import AistudioContent, AistudioPart
 
 
 def test_aistudio_part_encodes_function_call_and_response():
@@ -78,6 +79,7 @@ def test_normalize_anthropic_request_maps_tool_use_and_tool_result_to_wire_parts
     assert normalized["contents"][0].parts[0].text == 'Tool call Read with input: {"file_path": "navigation/a.py"}'
     assert normalized["contents"][1].role == "user"
     assert normalized["contents"][1].parts[0].text.startswith("Tool result for Read:")
+    assert "Continue the conversation using this tool result" in normalized["contents"][1].parts[0].text
     assert normalized["tools"][0][1][0][0] == "Read"
     schema = normalized["tools"][0][1][0][2]
     assert len(schema) <= 7 or schema[7] is None
@@ -94,3 +96,22 @@ def test_anthropic_message_response_maps_function_calls_to_tool_use_blocks():
     assert response["content"][0]["type"] == "tool_use"
     assert response["content"][0]["name"] == "Read"
     assert response["content"][0]["input"] == {"file_path": "navigation/a.py"}
+
+
+def test_prompt_snapshot_cache_only_allows_plain_prompt_contents():
+    assert _can_use_prompt_snapshot_cache("hello", None, None)
+    assert _can_use_prompt_snapshot_cache(
+        "hello",
+        None,
+        [AistudioContent(role="user", parts=[AistudioPart(text="hello")])],
+    )
+    assert not _can_use_prompt_snapshot_cache(
+        "system\nhello",
+        None,
+        [AistudioContent(role="user", parts=[AistudioPart(text="hello")])],
+    )
+    assert not _can_use_prompt_snapshot_cache(
+        "Tool output",
+        None,
+        [AistudioContent(role="user", parts=[AistudioPart(text="Tool output"), AistudioPart(text="continue")])],
+    )
