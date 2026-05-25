@@ -2,10 +2,37 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import time
 import uuid
 from typing import Any
+
+from pydantic import BaseModel
+
+from aistudio_api.api.response_models import (
+    AnthropicMessageResponse,
+    AnthropicTextBlockResponse,
+    AnthropicToolUseBlockResponse,
+    AnthropicUsageResponse,
+    ErrorDetail,
+    ErrorResponse,
+    GeminiFunctionCallPayload,
+    GeminiFunctionResponsePayload,
+    GeminiInlineDataResponse,
+    GeminiPartResponse,
+    GeminiUsageMetadata,
+    OpenAIChatChoice,
+    OpenAIChatChunkChoice,
+    OpenAIChatCompletionChunk,
+    OpenAIChatCompletionResponse,
+    OpenAIChatDelta,
+    OpenAIChatMessage,
+    OpenAIFunctionCallPayload,
+    OpenAIToolCall,
+    OpenAIUsage,
+)
+from aistudio_api.domain.models import GeneratedImage
 
 
 def new_chat_id() -> str:
@@ -16,29 +43,56 @@ def new_message_id() -> str:
     return f"msg_{uuid.uuid4().hex[:24]}"
 
 
-def normalize_usage(usage: dict | None = None) -> dict:
-    completion_details = (usage or {}).get("completion_tokens_details") or {}
-    return {
-        "prompt_tokens": (usage or {}).get("prompt_tokens", 0) or 0,
-        "completion_tokens": (usage or {}).get("completion_tokens", 0) or 0,
-        "total_tokens": (usage or {}).get("total_tokens", 0) or 0,
-        "completion_tokens_details": {
-            "reasoning_tokens": completion_details.get("reasoning_tokens", 0) or 0,
-        },
-    }
+def _coerce_usage_int(value: Any) -> int:
+    if isinstance(value, bool):
+        return 0
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+    if isinstance(value, str):
+        stripped = value.strip()
+        if stripped and (stripped.isdigit() or (stripped[0] in "+-" and stripped[1:].isdigit())):
+            return int(stripped)
+    return 0
 
 
-def to_gemini_usage_metadata(usage: dict | None = None) -> dict:
-    completion_details = (usage or {}).get("completion_tokens_details") or {}
-    reasoning_tokens = completion_details.get("reasoning_tokens", 0) or 0
-    visible_tokens = completion_details.get("visible_tokens")
-    candidates_tokens = visible_tokens if visible_tokens is not None else (usage or {}).get("completion_tokens", 0)
-    return {
-        "promptTokenCount": (usage or {}).get("prompt_tokens", 0) or 0,
-        "candidatesTokenCount": candidates_tokens or 0,
-        "thoughtsTokenCount": reasoning_tokens,
-        "totalTokenCount": (usage or {}).get("total_tokens", 0) or 0,
-    }
+def normalize_usage(usage: dict | None = None) -> OpenAIUsage:
+    usage = usage or {}
+    completion_details = usage.get("completion_tokens_details")
+    if not isinstance(completion_details, dict):
+        completion_details = {}
+    prompt_tokens = _coerce_usage_int(usage.get("prompt_tokens"))
+    completion_tokens = _coerce_usage_int(usage.get("completion_tokens"))
+    total_tokens = _coerce_usage_int(usage.get("total_tokens"))
+    if total_tokens == 0 and (prompt_tokens or completion_tokens):
+        total_tokens = prompt_tokens + completion_tokens
+    return OpenAIUsage(
+        prompt_tokens=prompt_tokens,
+        completion_tokens=completion_tokens,
+        total_tokens=total_tokens,
+        completion_tokens_details={"reasoning_tokens": _coerce_usage_int(completion_details.get("reasoning_tokens"))},
+    )
+
+
+def to_gemini_usage_metadata(usage: dict | None = None) -> GeminiUsageMetadata:
+    usage = usage or {}
+    completion_details = usage.get("completion_tokens_details")
+    if not isinstance(completion_details, dict):
+        completion_details = {}
+    reasoning_tokens = _coerce_usage_int(completion_details.get("reasoning_tokens"))
+    visible_tokens = _coerce_usage_int(completion_details.get("visible_tokens"))
+    candidates_tokens = visible_tokens or _coerce_usage_int(usage.get("completion_tokens"))
+    prompt_tokens = _coerce_usage_int(usage.get("prompt_tokens"))
+    total_tokens = _coerce_usage_int(usage.get("total_tokens"))
+    if total_tokens == 0 and (prompt_tokens or candidates_tokens or reasoning_tokens):
+        total_tokens = prompt_tokens + _coerce_usage_int(usage.get("completion_tokens"))
+    return GeminiUsageMetadata(
+        promptTokenCount=prompt_tokens,
+        candidatesTokenCount=candidates_tokens,
+        thoughtsTokenCount=reasoning_tokens,
+        totalTokenCount=total_tokens,
+    )
 
 
 def sse_chunk(
@@ -50,53 +104,59 @@ def sse_chunk(
     tool_calls: list[dict[str, Any]] | None = None,
     include_usage: bool = True,
 ) -> str:
-    delta = {"role": "assistant"}
-    if content:
-        delta["content"] = content
-    if thinking:
-        delta["thinking"] = thinking
-    if tool_calls:
-        delta["tool_calls"] = tool_calls
-    choice = {"index": 0, "delta": delta, "finish_reason": finish}
-    data = {
-        "id": chat_id,
-        "object": "chat.completion.chunk",
-        "created": int(time.time()),
-        "model": model,
-        "choices": [choice],
-    }
+    data = OpenAIChatCompletionChunk(
+        id=chat_id,
+        created=int(time.time()),
+        model=model,
+        choices=[
+            OpenAIChatChunkChoice(
+                index=0,
+                delta=OpenAIChatDelta(
+                    content=content or None,
+                    thinking=thinking,
+                    tool_calls=tool_calls,
+                ),
+                finish_reason=finish,
+            )
+        ],
+        usage=None,
+    )
+    payload = data.model_dump(mode="json", exclude_none=True)
     if include_usage:
-        data["usage"] = None
-    return f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
+        payload["usage"] = None
+    return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
 
 def sse_usage_chunk(chat_id: str, model: str, usage: dict | None = None) -> str:
-    data = {
-        "id": chat_id,
-        "object": "chat.completion.chunk",
-        "created": int(time.time()),
-        "model": model,
-        "choices": [],
-        "usage": normalize_usage(usage),
-    }
-    return f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
+    data = OpenAIChatCompletionChunk(
+        id=chat_id,
+        created=int(time.time()),
+        model=model,
+        choices=[],
+        usage=normalize_usage(usage),
+    )
+    return f"data: {data.model_dump_json()}\n\n"
 
 
 def sse_error(message: str) -> str:
-    data = {"error": {"message": message, "type": "server_error"}}
-    return f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
+    data = ErrorResponse(error=ErrorDetail(message=message, type="server_error"))
+    return f"data: {data.model_dump_json()}\n\n"
 
 
-def anthropic_usage(usage: dict | None = None) -> dict:
+def anthropic_usage(usage: dict | None = None) -> AnthropicUsageResponse:
     normalized = normalize_usage(usage)
-    return {
-        "input_tokens": normalized["prompt_tokens"],
-        "output_tokens": normalized["completion_tokens"],
-    }
+    return AnthropicUsageResponse(
+        input_tokens=normalized.prompt_tokens,
+        output_tokens=normalized.completion_tokens,
+    )
 
 
-def anthropic_sse(event_type: str, payload: dict[str, Any]) -> str:
-    return f"event: {event_type}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+def anthropic_sse(event_type: str, payload: dict[str, Any] | BaseModel) -> str:
+    if isinstance(payload, BaseModel):
+        body = payload.model_dump_json()
+    else:
+        body = json.dumps(payload, ensure_ascii=False)
+    return f"event: {event_type}\ndata: {body}\n\n"
 
 
 def anthropic_error_sse(message: str) -> str:
@@ -135,32 +195,29 @@ def anthropic_message_response(
     content: str,
     usage: dict | None = None,
     function_calls: list[dict[str, Any]] | None = None,
-) -> dict[str, Any]:
-    blocks: list[dict[str, Any]] = []
+) -> AnthropicMessageResponse:
+    blocks: list[AnthropicTextBlockResponse | AnthropicToolUseBlockResponse] = []
     if content:
-        blocks.append({"type": "text", "text": content})
+        blocks.append(AnthropicTextBlockResponse(text=content))
     for function_call in function_calls or []:
         blocks.append(
-            {
-                "type": "tool_use",
-                "id": function_call.get("anthropic_tool_use_id") or f"toolu_{uuid.uuid4().hex[:24]}",
-                "name": function_call.get("name", "unknown"),
-                "input": function_call_args(function_call),
-            }
+            AnthropicToolUseBlockResponse(
+                id=function_call.get("anthropic_tool_use_id") or f"toolu_{uuid.uuid4().hex[:24]}",
+                name=function_call.get("name", "unknown"),
+                input=function_call_args(function_call),
+            )
         )
     if not blocks:
-        blocks.append({"type": "text", "text": ""})
+        blocks.append(AnthropicTextBlockResponse(text=""))
 
-    return {
-        "id": new_message_id(),
-        "type": "message",
-        "role": "assistant",
-        "model": model,
-        "content": blocks,
-        "stop_reason": "tool_use" if function_calls else "end_turn",
-        "stop_sequence": None,
-        "usage": anthropic_usage(usage),
-    }
+    return AnthropicMessageResponse(
+        id=new_message_id(),
+        model=model,
+        content=blocks,
+        stop_reason="tool_use" if function_calls else "end_turn",
+        stop_sequence=None,
+        usage=anthropic_usage(usage),
+    )
 
 
 def _function_call_arguments(function_call: dict[str, Any]) -> str:
@@ -177,18 +234,17 @@ def _function_call_arguments(function_call: dict[str, Any]) -> str:
     return "{}"
 
 
-def to_openai_tool_calls(function_calls: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    tool_calls = []
+def to_openai_tool_calls(function_calls: list[dict[str, Any]]) -> list[OpenAIToolCall]:
+    tool_calls: list[OpenAIToolCall] = []
     for idx, function_call in enumerate(function_calls):
         tool_calls.append(
-            {
-                "id": f"call_{uuid.uuid4().hex[:12]}_{idx}",
-                "type": "function",
-                "function": {
-                    "name": function_call.get("name", "unknown"),
-                    "arguments": _function_call_arguments(function_call),
-                },
-            }
+            OpenAIToolCall(
+                id=f"call_{uuid.uuid4().hex[:12]}_{idx}",
+                function=OpenAIFunctionCallPayload(
+                    name=function_call.get("name", "unknown"),
+                    arguments=_function_call_arguments(function_call),
+                ),
+            )
         )
     return tool_calls
 
@@ -198,32 +254,53 @@ def to_gemini_parts(
     function_calls: list[dict[str, Any]] | None = None,
     function_responses: list[dict[str, Any]] | None = None,
     thinking: str = "",
-) -> list[dict[str, Any]]:
-    parts: list[dict[str, Any]] = []
+    images: list[GeneratedImage] | None = None,
+    reasoning_images: list[GeneratedImage] | None = None,
+) -> list[GeminiPartResponse]:
+    parts: list[GeminiPartResponse] = []
     if thinking:
-        parts.append({"text": thinking, "thought": True})
+        parts.append(GeminiPartResponse(text=thinking, thought=True))
+    for image in reasoning_images or []:
+        parts.append(
+            GeminiPartResponse(
+                thought=True,
+                inlineData=GeminiInlineDataResponse(
+                    mimeType=image.mime,
+                    data=base64.b64encode(image.data).decode("ascii"),
+                ),
+            )
+        )
     if content:
-        parts.append({"text": content})
+        parts.append(GeminiPartResponse(text=content))
+    for image in images or []:
+        parts.append(
+            GeminiPartResponse(
+                inlineData=GeminiInlineDataResponse(
+                    mimeType=image.mime,
+                    data=base64.b64encode(image.data).decode("ascii"),
+                )
+            )
+        )
     for function_call in function_calls or []:
-        part = {"functionCall": {"name": function_call.get("name", "unknown")}}
+        payload = GeminiFunctionCallPayload(name=function_call.get("name", "unknown"))
         if "args" in function_call:
-            part["functionCall"]["args"] = function_call["args"]
+            payload.args = function_call["args"]
         elif "arguments" in function_call:
-            part["functionCall"]["args"] = function_call["arguments"]
+            payload.args = function_call["arguments"]
         elif isinstance(function_call.get("raw"), list) and len(function_call["raw"]) > 1:
-            part["functionCall"]["args"] = function_call["raw"][1]
-        parts.append(part)
+            payload.args = function_call["raw"][1]
+        parts.append(GeminiPartResponse(functionCall=payload))
     for function_response in function_responses or []:
-        part = {"functionResponse": {"name": function_response.get("name", "unknown")}}
+        payload = GeminiFunctionResponsePayload(name=function_response.get("name", "unknown"))
         if "args" in function_response:
-            part["functionResponse"]["response"] = function_response["args"]
+            payload.response = function_response["args"]
         elif "arguments" in function_response:
-            part["functionResponse"]["response"] = function_response["arguments"]
+            payload.response = function_response["arguments"]
         elif isinstance(function_response.get("raw"), list) and len(function_response["raw"]) > 1:
-            part["functionResponse"]["response"] = function_response["raw"][1]
-        parts.append(part)
+            payload.response = function_response["raw"][1]
+        parts.append(GeminiPartResponse(functionResponse=payload))
     if not parts:
-        parts.append({"text": ""})
+        parts.append(GeminiPartResponse(text=""))
     return parts
 
 
@@ -233,19 +310,22 @@ def chat_completion_response(
     thinking: str = "",
     usage: dict | None = None,
     function_calls: list[dict[str, Any]] | None = None,
-) -> dict:
-    message: dict[str, Any] = {"role": "assistant", "content": content}
-    if thinking:
-        message["thinking"] = thinking
-    if function_calls:
-        message["tool_calls"] = to_openai_tool_calls(function_calls)
-
+) -> OpenAIChatCompletionResponse:
     finish_reason = "tool_calls" if function_calls else "stop"
-    return {
-        "id": new_chat_id(),
-        "object": "chat.completion",
-        "created": int(time.time()),
-        "model": model,
-        "choices": [{"index": 0, "message": message, "finish_reason": finish_reason}],
-        "usage": normalize_usage(usage),
-    }
+    return OpenAIChatCompletionResponse(
+        id=new_chat_id(),
+        created=int(time.time()),
+        model=model,
+        choices=[
+            OpenAIChatChoice(
+                index=0,
+                message=OpenAIChatMessage(
+                    content=content,
+                    thinking=thinking or None,
+                    tool_calls=to_openai_tool_calls(function_calls) if function_calls else None,
+                ),
+                finish_reason=finish_reason,
+            )
+        ],
+        usage=normalize_usage(usage),
+    )

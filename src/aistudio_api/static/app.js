@@ -166,14 +166,14 @@ function app() {
     get totalReqs() { return Object.values(this.stats).reduce((s, v) => s + (v.requests || 0), 0) },
     get totalRL() { return Object.values(this.stats).reduce((s, v) => s + (v.rate_limited || 0), 0) },
 
-    async saveRotation() { try { await fetch('/rotation/mode', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mode: this.rotCfg.mode, cooldown_seconds: this.rotCfg.cooldown }) }); this.showToast('已保存'); this.loadRotation() } catch (e) { this.showToast('保存失败') } },
-    async forceNext() { try { await fetch('/rotation/next', { method: 'POST' }); this.showToast('已切换账号'); this.loadAccounts() } catch (e) { this.showToast('切换失败') } },
-    async activateAccount(id) { try { await fetch(`/accounts/${id}/activate`, { method: 'POST' }); this.showToast('已激活'); this.loadAccounts(); this.loadRotation() } catch (e) { this.showToast('激活失败') } },
+    async saveRotation() { try { await this.apiFetch('/rotation/mode', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mode: this.rotCfg.mode, cooldown_seconds: this.rotCfg.cooldown }) }); this.showToast('已保存'); this.loadRotation() } catch (e) { this.showToast('保存失败') } },
+    async forceNext() { try { await this.apiFetch('/rotation/next', { method: 'POST' }); this.showToast('已切换账号'); this.loadAccounts() } catch (e) { this.showToast('切换失败') } },
+    async activateAccount(id) { try { await this.apiFetch(`/accounts/${id}/activate`, { method: 'POST' }); this.showToast('已激活'); this.loadAccounts(); this.loadRotation() } catch (e) { this.showToast('激活失败') } },
     async addAccount() {
       if (this.loginInProgress) return;
       this.loginInProgress = true;
       try {
-        const r = await fetch('/accounts/login/start', {
+        const r = await this.apiFetch('/accounts/login/start', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({})
@@ -196,7 +196,7 @@ function app() {
       while (Date.now() < deadline) {
         await new Promise(resolve => setTimeout(resolve, 2000));
         try {
-          const r = await fetch(`/accounts/login/status/${sessionId}`);
+          const r = await this.apiFetch(`/accounts/login/status/${sessionId}`);
           const d = await r.json().catch(() => ({}));
           if (!r.ok) {
             this.showToast(d.detail || '查询登录状态失败');
@@ -204,7 +204,7 @@ function app() {
           }
           if (d.status === 'completed') {
             if (d.account_id) {
-              await fetch(`/accounts/${d.account_id}/activate`, { method: 'POST' });
+              await this.apiFetch(`/accounts/${d.account_id}/activate`, { method: 'POST' });
             }
             this.showToast(`登录成功${d.email ? ': ' + d.email : ''}`);
             this.loadAccounts();
@@ -272,10 +272,21 @@ function app() {
       const t = this.draft.trim(); const imgs = [...this.selectedImages]; if (!t && !imgs.length) return; if (this.busy || !this.model) return;
       this.msgs.push({ role: 'user', content: t, images: imgs }); this.draft = ''; this.selectedImages = []; this.busy = true; this.resizeTa(); this.scrollDown(); this.saveToCache();
 
-      // 生图模型走 /v1/images/generations
+      // 生图模型走 /v1/images/edits (支持原始图片编辑)
       if (this.model.includes('image')) {
         try {
-          const r = await this.apiFetch('/v1/images/generations', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model: this.model, prompt: t, size: '1024x1024' }) });
+          const formData = new FormData();
+          formData.append('model', this.model);
+          formData.append('prompt', t);
+          formData.append('size', '1024x1024');
+          // 如果有选中的图片，转换为 File 对象传给 edit 接口（支持多张）
+          for (let i = 0; i < imgs.length; i++) {
+            const response = await fetch(imgs[i]);
+            const blob = await response.blob();
+            const file = new File([blob], `image_${i}.png`, { type: 'image/png' });
+            formData.append('image', file);
+          }
+          const r = await this.apiFetch('/v1/images/edits', { method: 'POST', body: formData });
           if (!r.ok) { let e = r.statusText; try { const d = await r.json(); if (d.detail) e = JSON.stringify(d.detail) } catch (x) { }; this.msgs.push({ role: 'assistant', content: '', error: `Error ${r.status}: ${e}` }) }
           else {
             const d = await r.json(); const imgs = d.data || []; let content = ''; imgs.forEach(img => { if (img.b64_json) content += `![image](data:image/png;base64,${img.b64_json})\n`; else if (img.url) content += `![image](${img.url})\n`; if (img.revised_prompt) content += img.revised_prompt + '\n' });

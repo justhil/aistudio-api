@@ -1,11 +1,8 @@
 """HTTP request schemas."""
-
 from __future__ import annotations
 
 from typing import Any, Optional
-
 from pydantic import BaseModel
-
 from aistudio_api.config import DEFAULT_IMAGE_MODEL, DEFAULT_TEXT_MODEL
 
 
@@ -53,6 +50,7 @@ class ImageRequest(BaseModel):
     n: int = 1
     size: str = "1024x1024"
     google_search: bool = False
+    image_search: bool = False
 
 
 class ImageUrl(BaseModel):
@@ -89,6 +87,8 @@ class GeminiTool(BaseModel):
     codeExecution: Optional[dict[str, Any]] = None
     googleSearch: Optional[dict[str, Any]] = None
     googleSearchRetrieval: Optional[dict[str, Any]] = None
+    googleMaps: Optional[dict[str, Any]] = None
+    urlContext: Optional[dict[str, Any]] = None
     functionDeclarations: Optional[list[dict[str, Any]]] = None
 
 
@@ -98,6 +98,7 @@ class GeminiGenerationConfig(BaseModel):
     topP: Optional[float] = None
     topK: Optional[int] = None
     maxOutputTokens: Optional[int] = None
+    responseModalities: Optional[list[str]] = None
     responseMimeType: Optional[str] = None
     responseSchema: Optional[list[Any] | dict[str, Any]] = None
     presencePenalty: Optional[float] = None
@@ -106,6 +107,12 @@ class GeminiGenerationConfig(BaseModel):
     logprobs: Optional[int] = None
     mediaResolution: Optional[list[Any] | int | str] = None
     thinkingConfig: Optional[list[Any] | dict[str, Any]] = None
+    imageConfig: Optional[dict[str, Any]] = None
+
+
+class GeminiSafetySetting(BaseModel):
+    category: str
+    threshold: str
 
 
 class GeminiGenerateContentRequest(BaseModel):
@@ -113,6 +120,7 @@ class GeminiGenerateContentRequest(BaseModel):
     systemInstruction: Optional[GeminiContent] = None
     tools: Optional[list[GeminiTool]] = None
     generationConfig: Optional[GeminiGenerationConfig] = None
+    safetySettings: Optional[list[GeminiSafetySetting]] = None
 
 
 class AnthropicContentBlock(BaseModel):
