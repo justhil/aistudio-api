@@ -75,9 +75,18 @@ def test_normalize_anthropic_request_maps_tool_use_and_tool_result_to_wire_parts
     )
 
     assert normalized["contents"][0].role == "model"
-    assert normalized["contents"][0].parts[0].text == 'Tool call Read with input: {"file_path": "navigation/a.py"}'
+    assert normalized["contents"][0].parts[0].function_call == (
+        "Read",
+        {"file_path": "navigation/a.py"},
+        "real_call_1",
+    )
+    assert normalized["contents"][0].parts[0].thought_signature == "real_signature"
     assert normalized["contents"][1].role == "user"
-    assert normalized["contents"][1].parts[0].text.startswith("Tool result for Read:")
+    assert normalized["contents"][1].parts[0].function_response == (
+        "Read",
+        {"result": [{"type": "text", "text": "file content"}]},
+        "real_call_1",
+    )
     assert normalized["tools"][0][1][0][0] == "Read"
     schema = normalized["tools"][0][1][0][2]
     assert len(schema) <= 7 or schema[7] is None

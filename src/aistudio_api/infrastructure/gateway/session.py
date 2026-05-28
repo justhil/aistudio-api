@@ -136,6 +136,23 @@ BOTGUARD_BOOTSTRAP_PROMPT = "say '1'"
 TEMPLATE_CAPTURE_PROMPT = "say 't'"
 
 
+def _snapshot_content_hash(contents: list[AistudioContent]) -> str:
+    hash_parts: list[str] = []
+    for content in contents:
+        for part in content.parts:
+            if part.inline_data:
+                hash_parts.append(part.inline_data[1])  # base64 data
+            if part.text:
+                hash_parts.append(str(part.text))
+            if part.function_call:
+                hash_parts.append(json.dumps(part.function_call, ensure_ascii=False, sort_keys=True))
+            if part.function_response:
+                hash_parts.append(json.dumps(part.function_response, ensure_ascii=False, sort_keys=True))
+            if part.thought_signature:
+                hash_parts.append(str(part.thought_signature))
+    return sha256(" ".join(hash_parts).encode("utf-8")).hexdigest()
+
+
 class BrowserSession:
     def __init__(self, port: int):
         self.port = port
@@ -339,6 +356,19 @@ class BrowserSession:
                 return url, headers
         raise RuntimeError("no captured URL available for replay")
 
+    def _resolve_captured_info(
+        self,
+        captured_url: str | None,
+        captured_headers: dict[str, str] | None,
+    ) -> tuple[str, dict[str, str]]:
+        if captured_url is None or captured_headers is None:
+            fallback_url, fallback_headers = self._get_captured_info()
+            if captured_url is None:
+                captured_url = fallback_url
+            if captured_headers is None:
+                captured_headers = fallback_headers
+        return captured_url, captured_headers
+
     def _send_streaming_request_sync(
         self,
         body: str,
@@ -354,8 +384,7 @@ class BrowserSession:
         _t0 = _t.time()
 
         page = self._ensure_botguard_service_sync()
-        if captured_url is None or captured_headers is None:
-            captured_url, captured_headers = self._get_captured_info()
+        captured_url, captured_headers = self._resolve_captured_info(captured_url, captured_headers)
         log.debug(f"[stream] prep done in {_t.time()-_t0:.1f}s, url={captured_url}")
 
         timeout_s = timeout_ms / 1000
@@ -831,19 +860,7 @@ class BrowserSession:
         if not self._snap_key:
             raise RuntimeError("Snapshot function not detected")
 
-        # 计算 content hash（包含图片数据，与 camoufox-api 一致）
-        hash_parts: list[str] = []
-        for content in contents:
-            for part in content.parts:
-                if part.inline_data:
-                    hash_parts.append(part.inline_data[1])  # base64 data
-                if part.text:
-                    hash_parts.append(str(part.text))
-                if part.function_call:
-                    hash_parts.append(json.dumps(part.function_call, ensure_ascii=False, sort_keys=True))
-                if part.function_response:
-                    hash_parts.append(json.dumps(part.function_response, ensure_ascii=False, sort_keys=True))
-        content_hash = sha256(" ".join(hash_parts).encode("utf-8")).hexdigest()
+        content_hash = _snapshot_content_hash(contents)
 
         page.evaluate(
             """
@@ -1058,8 +1075,7 @@ mw:((hash) => {
         _t0 = _t.time()
         page = self._ensure_botguard_service_sync()
         log.debug(f"[timing] botguard ready in {_t.time()-_t0:.1f}s")
-        if captured_url is None or captured_headers is None:
-            captured_url, captured_headers = self._get_captured_info()
+        captured_url, captured_headers = self._resolve_captured_info(captured_url, captured_headers)
 
         # Replay via XHR in browser context (same approach as non-streaming replay_v2)
         timeout_s = timeout_ms / 1000

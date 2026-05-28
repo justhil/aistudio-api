@@ -378,6 +378,7 @@ def normalize_anthropic_request(req, tmp_dir: str = "/tmp", tool_context: dict[s
     cleanup_paths: list[str] = []
     pending_tool_parts: list[AistudioPart] = []
     tool_id_to_name = _anthropic_tool_id_name_map(req.messages)
+    tool_context = tool_context or {}
 
     def flush_tool_parts():
         if pending_tool_parts:
@@ -392,10 +393,24 @@ def normalize_anthropic_request(req, tmp_dir: str = "/tmp", tool_context: dict[s
             tool_results = [block for block in content if block.type == "tool_result"]
             other_blocks = [block for block in content if block.type != "tool_result"]
             for block in tool_results:
-                function_name = tool_id_to_name.get(block.tool_use_id or "") or block.name or "unknown_function"
+                tool_info = _anthropic_tool_context(block.tool_use_id, tool_context)
+                function_name = (
+                    tool_info.get("name")
+                    or tool_id_to_name.get(block.tool_use_id or "")
+                    or block.name
+                    or "unknown_function"
+                )
                 capture_text = _anthropic_tool_result_text(block.content)
-                text = capture_text or json.dumps(_anthropic_tool_result_response(block.content), ensure_ascii=False)
-                pending_tool_parts.append(AistudioPart(text=_anthropic_tool_result_message(function_name, text)))
+                call_id = _anthropic_tool_call_id(block.tool_use_id, tool_info)
+                pending_tool_parts.append(
+                    AistudioPart(
+                        function_response=_anthropic_function_part(
+                            function_name,
+                            _anthropic_tool_result_response(block.content),
+                            call_id,
+                        )
+                    )
+                )
                 if capture_text:
                     capture_texts.append(capture_text)
             if tool_results and not other_blocks:
@@ -429,12 +444,13 @@ def normalize_anthropic_request(req, tmp_dir: str = "/tmp", tool_context: dict[s
                         image_paths.append(image_path)
                         cleanup_paths.append(image_path)
                 elif role == "assistant" and block.type == "tool_use" and block.name:
+                    tool_info = _anthropic_tool_context(block.id, tool_context)
+                    call_id = _anthropic_tool_call_id(block.id, tool_info)
+                    thought_signature = tool_info.get("thought_signature") or None
                     parts.append(
                         AistudioPart(
-                            text=(
-                                f"Tool call {block.name} with input: "
-                                f"{json.dumps(block.input or {}, ensure_ascii=False)}"
-                            )
+                            function_call=_anthropic_function_part(block.name, block.input or {}, call_id),
+                            thought_signature=thought_signature,
                         )
                     )
 
@@ -531,6 +547,28 @@ def _anthropic_tool_id_name_map(messages) -> dict[str, str]:
     return mapping
 
 
+def _anthropic_tool_context(tool_use_id: str | None, tool_context: dict[str, dict]) -> dict[str, Any]:
+    if not tool_use_id:
+        return {}
+    context = tool_context.get(tool_use_id)
+    return context if isinstance(context, dict) else {}
+
+
+def _anthropic_tool_call_id(tool_use_id: str | None, tool_info: dict[str, Any]) -> str | None:
+    call_id = tool_info.get("call_id")
+    if call_id:
+        return str(call_id)
+    if not tool_use_id:
+        return None
+    if tool_use_id.startswith("toolu_"):
+        return tool_use_id.removeprefix("toolu_")
+    return tool_use_id
+
+
+def _anthropic_function_part(name: str, payload: object, call_id: str | None):
+    return (name, payload, call_id) if call_id else (name, payload)
+
+
 def _anthropic_image_source_to_file(source: dict[str, Any], tmp_dir: str = "/tmp") -> str | None:
     source_type = source.get("type")
     if source_type == "base64" and source.get("media_type") and source.get("data"):
@@ -553,14 +591,6 @@ def _anthropic_tool_result_response(content) -> dict[str, Any]:
     if content is None:
         return {"result": ""}
     return {"result": content}
-
-
-def _anthropic_tool_result_message(function_name: str, text: str) -> str:
-    return (
-        f"Tool result for {function_name}:\n{text}\n\n"
-        "Continue the conversation using this tool result. "
-        "Provide the final answer to the user unless another tool call is necessary."
-    )
 
 
 def _anthropic_tool_result_text(content) -> str:
