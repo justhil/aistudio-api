@@ -153,6 +153,23 @@ def _snapshot_content_hash(contents: list[AistudioContent]) -> str:
     return sha256(" ".join(hash_parts).encode("utf-8")).hexdigest()
 
 
+def _is_aistudio_url(url: str) -> bool:
+    return "aistudio.google.com" in (url or "")
+
+
+def _is_google_signin_url(url: str) -> bool:
+    return "accounts.google.com" in (url or "") and "signin" in (url or "")
+
+
+def _clear_chromium_profile_locks(profile_path: Path) -> None:
+    for name in ("SingletonLock", "SingletonSocket", "SingletonCookie"):
+        lock_path = profile_path / name
+        try:
+            lock_path.unlink(missing_ok=True)
+        except Exception as exc:
+            log.debug("Failed to remove Chromium profile lock %s: %s", lock_path, exc)
+
+
 class BrowserSession:
     def __init__(self, port: int):
         self.port = port
@@ -613,6 +630,7 @@ class BrowserSession:
             # causing Google to flag the profile's cookie state as inconsistent.
             should_seed_from_auth = not (profile_path.exists() and any(profile_path.iterdir()))
             profile_path.mkdir(parents=True, exist_ok=True)
+            _clear_chromium_profile_locks(profile_path)
             self._ctx = sync_launch_persistent_context(
                 profile_dir,
                 **build_browser_context_options(),
@@ -1124,14 +1142,24 @@ mw:((hash) => {
                 log.debug(f"[timing] goto {url} took {_t.time()-_t0:.1f}s")
                 # 检查是否被重定向到登录页
                 current_url = page.url or ""
-                if "accounts.google.com" in current_url and "signin" in current_url:
+                if _is_google_signin_url(current_url):
                     raise RuntimeError(
                         f"Cookie 认证失败，已被重定向到 Google 登录页。"
                         f" (url={current_url})"
                     )
+                if not _is_aistudio_url(current_url):
+                    raise RuntimeError(f"AI Studio redirected away before UI ready: url={current_url}")
                 # Wait for SPA framework and chat UI to render
                 for _ in range(60):
                     page.wait_for_timeout(1000)
+                    current_url = page.url or ""
+                    if _is_google_signin_url(current_url):
+                        raise RuntimeError(
+                            f"Cookie 认证失败，已被重定向到 Google 登录页。"
+                            f" (url={current_url})"
+                        )
+                    if not _is_aistudio_url(current_url):
+                        raise RuntimeError(f"AI Studio redirected away before UI ready: url={current_url}")
                     has_dms = page.evaluate("mw:!!window.default_MakerSuite")
                     has_textarea = page.query_selector("textarea") is not None
                     if has_dms and has_textarea:
@@ -1140,9 +1168,10 @@ mw:((hash) => {
                         return
                     if has_dms and _ > 20:
                         page.evaluate(DIALOG_CLEANUP_JS)
-                log.debug(f"[timing] UI partially ready after {_t.time()-_t0:.1f}s (dms={has_dms}, textarea={has_textarea})")
-                self._save_cookies_sync()
-                return
+                raise RuntimeError(
+                    f"AI Studio UI not ready after {_t.time()-_t0:.1f}s "
+                    f"(url={page.url}, dms={has_dms}, textarea={has_textarea})"
+                )
             except Exception as exc:
                 log.debug(f"[timing] goto {url} failed after {_t.time()-_t0:.1f}s: {exc}")
                 last_exc = exc
