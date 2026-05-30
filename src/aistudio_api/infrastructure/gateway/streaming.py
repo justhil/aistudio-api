@@ -110,9 +110,6 @@ class StreamingGateway:
         latest_usage: dict | None = None
         raw_parts: list[str] = []
         status_code = 0
-        # 仅在需要落盘或响应非 200（用于错误摘要）时累积完整响应，
-        # 正常 200 流式响应无需在内存里保留全文。
-        keep_raw = settings.dump_raw_response
 
         async for event_type, payload in self._session.send_streaming_request(
             body=modified_body,
@@ -122,12 +119,9 @@ class StreamingGateway:
         ):
             if event_type == "status" and payload and not status_code:
                 status_code = int(payload)
-                if status_code != 200:
-                    keep_raw = True
             elif event_type == "chunk" and payload:
                 text_payload = payload.decode("utf-8", errors="replace")
-                if keep_raw:
-                    raw_parts.append(text_payload)
+                raw_parts.append(text_payload)
                 for parsed_chunk in parser.feed(text_payload):
                     usage = parse_chunk_usage(parsed_chunk)
                     if usage:
