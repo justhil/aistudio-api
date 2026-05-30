@@ -154,11 +154,18 @@ def _snapshot_content_hash(contents: list[AistudioContent]) -> str:
 
 
 def _is_aistudio_url(url: str) -> bool:
-    return "aistudio.google.com" in (url or "")
+    # 仅匹配真实 host，避免被登录页 continue= 参数里的 aistudio.google.com 误判。
+    from urllib.parse import urlparse
+
+    host = (urlparse(url or "").hostname or "").lower()
+    return host == "aistudio.google.com" or host.endswith(".aistudio.google.com")
 
 
 def _is_google_signin_url(url: str) -> bool:
-    return "accounts.google.com" in (url or "") and "signin" in (url or "")
+    from urllib.parse import urlparse
+
+    host = (urlparse(url or "").hostname or "").lower()
+    return host == "accounts.google.com" and "signin" in (url or "")
 
 
 def _clear_chromium_profile_locks(profile_path: Path) -> None:
@@ -735,8 +742,12 @@ class BrowserSession:
 
     def _ensure_hook_page_sync(self):
         self._ensure_browser_sync()
-        if "aistudio.google.com" not in (self._hook_page.url or ""):
+        if not _is_aistudio_url(self._hook_page.url or ""):
             self._goto_aistudio_sync(self._hook_page)
+        elif _is_google_signin_url(self._hook_page.url or ""):
+            raise RuntimeError(
+                f"Cookie 认证失败，当前处于 Google 登录页，请重新导入账号 Cookies。 (url={self._hook_page.url})"
+            )
         self._install_hooks_sync(self._hook_page)
         return self._hook_page
 

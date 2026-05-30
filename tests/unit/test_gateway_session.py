@@ -35,3 +35,19 @@ def test_snapshot_content_hash_includes_thought_signature():
     )
 
     assert _snapshot_content_hash([base]) != _snapshot_content_hash([signed])
+
+
+def test_is_aistudio_url_ignores_signin_continue_param():
+    from aistudio_api.infrastructure.gateway.session import _is_aistudio_url, _is_google_signin_url
+
+    signin = (
+        "https://accounts.google.com/v3/signin/identifier?"
+        "continue=https%3A%2F%2Faistudio.google.com%2Fapp%2Fprompts%2Fnew_chat&flowName=GlifWebSignIn"
+    )
+    studio = "https://aistudio.google.com/prompts/new_chat?model=gemma-4-31b-it"
+
+    # 登录页 continue= 参数里含 aistudio.google.com，但 host 是 accounts.google.com
+    assert _is_aistudio_url(signin) is False
+    assert _is_google_signin_url(signin) is True
+    assert _is_aistudio_url(studio) is True
+    assert _is_google_signin_url(studio) is False
