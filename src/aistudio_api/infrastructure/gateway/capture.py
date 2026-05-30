@@ -48,9 +48,12 @@ class RequestCaptureService:
         rewritten_contents = contents
         snapshot_contents = rewritten_contents or [self._build_capture_content(prompt=prompt, images=images)]
         snapshot = await self._session.generate_snapshot(snapshot_contents)
+        # 模板是从默认模型页（gemma-4-31b-it）抓取并被所有模型复用的，其 body 里
+        # 烘焙的 model 不能作为实际请求模型，必须用调用方请求的 model（补全 models/ 前缀）。
+        wire_model = model if model.startswith("models/") else f"models/{model}"
         body = modify_body(
             template.body,
-            model=template.model or model,
+            model=wire_model,
             prompt=prompt,
             contents=rewritten_contents,
             snapshot=snapshot,
