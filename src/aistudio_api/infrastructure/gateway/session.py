@@ -923,10 +923,10 @@ mw:((hash) => {
 """
             % json.dumps(content_hash)
         )
-        for _ in range(20):
+        for _ in range(100):
             if page.evaluate("mw:(window.__sl || 0)") > 0:
                 break
-            page.wait_for_timeout(500)
+            page.wait_for_timeout(100)
 
         snapshot = page.evaluate("mw:window.__sr")
         if snapshot:
