@@ -435,7 +435,8 @@ def test_normalize_gemini_response_schema_sanitizes_nullable_unions():
     assert schema[6] == [["answer", [1]], ["score", [2]]]
 
 
-def test_normalize_gemini_request_preserves_function_call_parts():
+def test_normalize_gemini_request_renders_function_parts_as_text_transcript():
+    # AI Studio rejects replayed native function parts (403); they become text.
     req = GeminiGenerateContentRequest(
         contents=[
             GeminiContent(role="user", parts=[GeminiPart(text="weather?")]),
@@ -453,8 +454,12 @@ def test_normalize_gemini_request_preserves_function_call_parts():
     norm = normalize_gemini_request(req, "gemini-3.5-flash")
     model_part = norm["contents"][1].parts[0]
     response_part = norm["contents"][2].parts[0]
-    assert model_part.function_call == ("get_weather", {"city": "SF"}, "fc1")
-    assert response_part.function_response == ("get_weather", {"temp": 18}, "fc1")
+    assert model_part.function_call is None
+    assert "assistant tool_call: get_weather" in model_part.text
+    assert '"city": "SF"' in model_part.text
+    assert response_part.function_response is None
+    assert "tool_result for: get_weather" in response_part.text
+    assert '"temp": 18' in response_part.text
 
 
 def test_normalize_gemini_function_call_without_id_or_args():
@@ -469,4 +474,6 @@ def test_normalize_gemini_function_call_without_id_or_args():
 
     norm = normalize_gemini_request(req, "gemini-3.5-flash")
     part = norm["contents"][0].parts[0]
-    assert part.function_call == ("ping", {})
+    assert part.function_call is None
+    assert "assistant tool_call: ping" in part.text
+    assert "arguments: {}" in part.text

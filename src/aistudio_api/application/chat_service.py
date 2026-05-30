@@ -56,6 +56,28 @@ def url_to_file(url: str, tmp_dir: str = "/tmp") -> str:
     return path
 
 
+TOOL_HISTORY_START = "<internal_tool_history>"
+TOOL_HISTORY_END = "</internal_tool_history>"
+
+
+def _tool_call_transcript(name: str, arguments_text: str) -> str:
+    return (
+        f"{TOOL_HISTORY_START}\n"
+        f"assistant tool_call: {name}\n"
+        f"arguments: {arguments_text}\n"
+        f"{TOOL_HISTORY_END}"
+    )
+
+
+def _tool_result_transcript(name: str, text: str) -> str:
+    return (
+        f"{TOOL_HISTORY_START}\n"
+        f"tool_result for: {name}\n"
+        f"content:\n{text}\n"
+        f"{TOOL_HISTORY_END}"
+    )
+
+
 def normalize_chat_request(messages, requested_model: str, tmp_dir: str = "/tmp") -> dict:
     system_texts: list[str] = []
     contents: list[AistudioContent] = []
@@ -81,19 +103,14 @@ def normalize_chat_request(messages, requested_model: str, tmp_dir: str = "/tmp"
                 capture_texts.append(text)
             continue
 
-        # OpenAI 工具结果：role=tool，转为 function_response Part，
-        # 与官方 Gemini 语义一致（归入 user/function 角色），多个连续结果合并。
+        # OpenAI 工具结果：role=tool。AI Studio 拒绝回放原生 function_response
+        # Part（返回 403 PERMISSION_DENIED），改用文本 transcript 传递上下文。
         if role == "tool":
             name = tool_id_to_name.get(msg.tool_call_id or "") or msg.name or "unknown_function"
-            response = _openai_tool_result_response(msg.content)
+            text = _message_text_content(msg.content) or ""
             pending_tool_parts.append(
-                AistudioPart(
-                    function_response=(name, response, msg.tool_call_id)
-                    if msg.tool_call_id
-                    else (name, response)
-                )
+                AistudioPart(text=_tool_result_transcript(name, text))
             )
-            text = _message_text_content(msg.content)
             if text:
                 capture_texts.append(text)
             continue
@@ -128,7 +145,8 @@ def normalize_chat_request(messages, requested_model: str, tmp_dir: str = "/tmp"
                         image_paths.append(path)
                         cleanup_paths.append(path)
 
-        # OpenAI 助手工具调用：role=assistant + tool_calls，转为 function_call Part。
+        # OpenAI 助手工具调用：role=assistant + tool_calls。同样避免原生
+        # function_call Part，改以文本 transcript 保留“模型调用了什么”的上下文。
         if role == "assistant" and msg.tool_calls:
             for tool_call in msg.tool_calls:
                 function = tool_call.function
@@ -137,9 +155,10 @@ def normalize_chat_request(messages, requested_model: str, tmp_dir: str = "/tmp"
                 args = _parse_tool_call_arguments(function.arguments)
                 parts.append(
                     AistudioPart(
-                        function_call=(function.name, args, tool_call.id)
-                        if tool_call.id
-                        else (function.name, args)
+                        text=_tool_call_transcript(
+                            function.name,
+                            json.dumps(args, ensure_ascii=False),
+                        )
                     )
                 )
 
@@ -193,17 +212,6 @@ def _parse_tool_call_arguments(arguments) -> dict:
             return {}
         return parsed if isinstance(parsed, dict) else {}
     return {}
-
-
-def _openai_tool_result_response(content) -> dict[str, Any]:
-    text = _message_text_content(content)
-    if text:
-        try:
-            parsed = json.loads(text)
-        except json.JSONDecodeError:
-            return {"result": text}
-        return parsed if isinstance(parsed, dict) else {"result": parsed}
-    return {"result": ""}
 
 
 def _message_text_content(content) -> str | None:
@@ -920,7 +928,7 @@ def normalize_gemini_request(req, requested_model: str, tmp_dir: str = "/tmp") -
                 args = call.args or {}
                 parts.append(
                     AistudioPart(
-                        function_call=(call.name, args, call.id) if call.id else (call.name, args),
+                        text=_tool_call_transcript(call.name, json.dumps(args, ensure_ascii=False)),
                         thought_signature=part.thoughtSignature,
                     )
                 )
@@ -928,10 +936,11 @@ def normalize_gemini_request(req, requested_model: str, tmp_dir: str = "/tmp") -
             if part.functionResponse is not None:
                 fr = part.functionResponse
                 response = fr.response if fr.response is not None else {}
+                response_text = (
+                    response if isinstance(response, str) else json.dumps(response, ensure_ascii=False)
+                )
                 parts.append(
-                    AistudioPart(
-                        function_response=(fr.name, response, fr.id) if fr.id else (fr.name, response),
-                    )
+                    AistudioPart(text=_tool_result_transcript(fr.name, response_text))
                 )
                 continue
             if part.fileData is not None:
