@@ -60,22 +60,14 @@ TOOL_HISTORY_START = "<internal_tool_history>"
 TOOL_HISTORY_END = "</internal_tool_history>"
 
 
-def _tool_call_transcript(name: str, arguments_text: str) -> str:
-    return (
-        f"{TOOL_HISTORY_START}\n"
-        f"assistant tool_call: {name}\n"
-        f"arguments: {arguments_text}\n"
-        f"{TOOL_HISTORY_END}"
-    )
-
-
-def _tool_result_transcript(name: str, text: str) -> str:
-    return (
-        f"{TOOL_HISTORY_START}\n"
-        f"tool_result for: {name}\n"
-        f"content:\n{text}\n"
-        f"{TOOL_HISTORY_END}"
-    )
+def _tool_transcript(name: str, arguments_text: str | None, result_text: str) -> str:
+    # 全部放在 user 角色，避免模型从 model 角色历史里“学会”直接输出该标记。
+    lines = [TOOL_HISTORY_START, f"tool: {name}"]
+    if arguments_text:
+        lines.append(f"arguments: {arguments_text}")
+    lines.append(f"result:\n{result_text}")
+    lines.append(TOOL_HISTORY_END)
+    return "\n".join(lines)
 
 
 def normalize_chat_request(messages, requested_model: str, tmp_dir: str = "/tmp") -> dict:
@@ -86,6 +78,7 @@ def normalize_chat_request(messages, requested_model: str, tmp_dir: str = "/tmp"
     cleanup_paths: list[str] = []
     saw_images = False
     tool_id_to_name = _openai_tool_id_name_map(messages)
+    tool_id_to_args = _openai_tool_id_args_map(messages)
     pending_tool_parts: list[AistudioPart] = []
 
     def flush_tool_parts():
@@ -103,13 +96,15 @@ def normalize_chat_request(messages, requested_model: str, tmp_dir: str = "/tmp"
                 capture_texts.append(text)
             continue
 
-        # OpenAI 工具结果：role=tool。AI Studio 拒绝回放原生 function_response
-        # Part（返回 403 PERMISSION_DENIED），改用文本 transcript 传递上下文。
+        # OpenAI 工具结果：role=tool。AI Studio 拒绝回放原生 function part（403），
+        # 改用文本 transcript；调用参数从对应的 assistant tool_call 查出，一并放入
+        # user 角色的 transcript，避免出现在 model 角色而被模型模仿输出。
         if role == "tool":
             name = tool_id_to_name.get(msg.tool_call_id or "") or msg.name or "unknown_function"
+            args_text = tool_id_to_args.get(msg.tool_call_id or "")
             text = _message_text_content(msg.content) or ""
             pending_tool_parts.append(
-                AistudioPart(text=_tool_result_transcript(name, text))
+                AistudioPart(text=_tool_transcript(name, args_text, text))
             )
             if text:
                 capture_texts.append(text)
@@ -145,22 +140,8 @@ def normalize_chat_request(messages, requested_model: str, tmp_dir: str = "/tmp"
                         image_paths.append(path)
                         cleanup_paths.append(path)
 
-        # OpenAI 助手工具调用：role=assistant + tool_calls。同样避免原生
-        # function_call Part，改以文本 transcript 保留“模型调用了什么”的上下文。
-        if role == "assistant" and msg.tool_calls:
-            for tool_call in msg.tool_calls:
-                function = tool_call.function
-                if function is None or not function.name:
-                    continue
-                args = _parse_tool_call_arguments(function.arguments)
-                parts.append(
-                    AistudioPart(
-                        text=_tool_call_transcript(
-                            function.name,
-                            json.dumps(args, ensure_ascii=False),
-                        )
-                    )
-                )
+        # OpenAI 助手工具调用（role=assistant + tool_calls）不进 model 角色：避免模型
+        # 从历史里学会输出 transcript 标记。其调用信息由后续 tool 结果 transcript 携带。
 
         for image_path in image_paths:
             parts.append(_image_path_to_part(image_path))
@@ -199,6 +180,20 @@ def _openai_tool_id_name_map(messages) -> dict[str, str]:
         for tool_call in msg.tool_calls:
             if tool_call.id and tool_call.function and tool_call.function.name:
                 mapping[tool_call.id] = tool_call.function.name
+    return mapping
+
+
+def _openai_tool_id_args_map(messages) -> dict[str, str]:
+    mapping: dict[str, str] = {}
+    for msg in messages:
+        if (msg.role or "").lower() != "assistant" or not msg.tool_calls:
+            continue
+        for tool_call in msg.tool_calls:
+            if not (tool_call.id and tool_call.function):
+                continue
+            args = _parse_tool_call_arguments(tool_call.function.arguments)
+            if args:
+                mapping[tool_call.id] = json.dumps(args, ensure_ascii=False)
     return mapping
 
 
@@ -876,15 +871,29 @@ def _sanitize_schema_for_wire(
     return sanitized
 
 
+def _gemini_fc_id_args_map(contents) -> dict[str, str]:
+    mapping: dict[str, str] = {}
+    for content in contents:
+        for part in content.parts:
+            call = getattr(part, "functionCall", None)
+            if call is None or not call.id:
+                continue
+            args = call.args or {}
+            if args:
+                mapping[call.id] = json.dumps(args, ensure_ascii=False)
+    return mapping
+
+
 def normalize_gemini_request(req, requested_model: str, tmp_dir: str = "/tmp") -> dict:
     if not req.contents:
         raise ValueError("contents is required")
-
-    model = requested_model if requested_model.startswith("models/") else f"models/{requested_model}"
     contents: list[AistudioContent] = []
     cleanup_paths: list[str] = []
     capture_prompt = "你好"
     capture_images: list[str] = []
+
+    model = requested_model if requested_model.startswith("models/") else f"models/{requested_model}"
+    fc_id_to_args = _gemini_fc_id_args_map(req.contents)
 
     for content in req.contents:
         role = content.role or "user"
@@ -924,14 +933,8 @@ def normalize_gemini_request(req, requested_model: str, tmp_dir: str = "/tmp") -
                 cleanup_paths.append(image_path)
                 continue
             if part.functionCall is not None:
-                call = part.functionCall
-                args = call.args or {}
-                parts.append(
-                    AistudioPart(
-                        text=_tool_call_transcript(call.name, json.dumps(args, ensure_ascii=False)),
-                        thought_signature=part.thoughtSignature,
-                    )
-                )
+                # 不进 model 角色：避免模型从历史里学会输出 transcript 标记。
+                # 调用参数由后续 functionResponse 的 transcript 携带。
                 continue
             if part.functionResponse is not None:
                 fr = part.functionResponse
@@ -939,13 +942,16 @@ def normalize_gemini_request(req, requested_model: str, tmp_dir: str = "/tmp") -
                 response_text = (
                     response if isinstance(response, str) else json.dumps(response, ensure_ascii=False)
                 )
+                args_text = fc_id_to_args.get(fr.id or "")
                 parts.append(
-                    AistudioPart(text=_tool_result_transcript(fr.name, response_text))
+                    AistudioPart(text=_tool_transcript(fr.name, args_text, response_text))
                 )
                 continue
             if part.fileData is not None:
                 raise ValueError("fileData is not supported yet")
 
+        if not parts:
+            continue
         contents.append(AistudioContent(role=role, parts=parts))
 
         if role == "user":
@@ -1061,7 +1067,7 @@ def normalize_gemini_request(req, requested_model: str, tmp_dir: str = "/tmp") -
 
     return {
         "model": model,
-        "contents": contents,
+        "contents": contents or [AistudioContent(role="user", parts=[AistudioPart(text="你好")])],
         "system_instruction": system_instruction,
         "tools": tools if tools is not None else None,
         "safety_settings": _normalize_gemini_safety_settings(req.safetySettings) if req.safetySettings is not None else None,

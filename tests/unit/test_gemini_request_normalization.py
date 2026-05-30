@@ -437,6 +437,8 @@ def test_normalize_gemini_response_schema_sanitizes_nullable_unions():
 
 def test_normalize_gemini_request_renders_function_parts_as_text_transcript():
     # AI Studio rejects replayed native function parts (403); they become text.
+    # The function call is folded into the user-role result transcript and must
+    # not appear as a model-role turn.
     req = GeminiGenerateContentRequest(
         contents=[
             GeminiContent(role="user", parts=[GeminiPart(text="weather?")]),
@@ -452,17 +454,16 @@ def test_normalize_gemini_request_renders_function_parts_as_text_transcript():
     )
 
     norm = normalize_gemini_request(req, "gemini-3.5-flash")
-    model_part = norm["contents"][1].parts[0]
-    response_part = norm["contents"][2].parts[0]
-    assert model_part.function_call is None
-    assert "assistant tool_call: get_weather" in model_part.text
-    assert '"city": "SF"' in model_part.text
+    # model-only-functionCall turn is dropped
+    assert all(c.role != "model" for c in norm["contents"])
+    response_part = norm["contents"][-1].parts[0]
     assert response_part.function_response is None
-    assert "tool_result for: get_weather" in response_part.text
+    assert "tool: get_weather" in response_part.text
+    assert '"city": "SF"' in response_part.text  # call args folded in by id
     assert '"temp": 18' in response_part.text
 
 
-def test_normalize_gemini_function_call_without_id_or_args():
+def test_normalize_gemini_function_call_without_response_is_dropped():
     req = GeminiGenerateContentRequest(
         contents=[
             GeminiContent(
@@ -473,7 +474,7 @@ def test_normalize_gemini_function_call_without_id_or_args():
     )
 
     norm = normalize_gemini_request(req, "gemini-3.5-flash")
-    part = norm["contents"][0].parts[0]
-    assert part.function_call is None
-    assert "assistant tool_call: ping" in part.text
-    assert "arguments: {}" in part.text
+    # No model-role turn carries the transcript marker.
+    for content in norm["contents"]:
+        for part in content.parts:
+            assert part.function_call is None

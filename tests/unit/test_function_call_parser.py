@@ -96,3 +96,47 @@ def test_parse_response_chunk_extracts_real_aistudio_function_call_shape():
             "thought_signature": "EiYKJGUyNDgzMGE3LTVjZDYtNDJmZS05OThiLWVlNTM5ZTcyYjljMw==",
         }
     ]
+
+
+def test_parse_response_chunk_decodes_numeric_and_bool_function_call_args():
+    # google.protobuf.Value slots: number_value=index1, string_value=index2,
+    # bool_value=index3, list_value=index5. Previously only strings decoded.
+    chunk = [
+        [
+            [
+                [
+                    [
+                        [
+                            None, None, None, None, None, None, None, None, None, None,
+                            [
+                                "read",
+                                [[
+                                    ["limit", [None, 100]],
+                                    ["offset", [None, 0]],
+                                    ["recursive", [None, None, None, True]],
+                                    ["path", [None, None, "README.md"]],
+                                    ["lines", [None, None, None, None, None, [[[None, 1], [None, 2]]]]],
+                                ]],
+                                "call_xyz",
+                            ],
+                        ]
+                    ],
+                    "model",
+                ]
+            ]
+        ],
+        None,
+        [10, 5, 15],
+        None, None, None, None,
+        "resp_num",
+    ]
+
+    candidate = parse_response_chunk(chunk)
+    assert candidate.function_calls[0]["name"] == "read"
+    assert candidate.function_calls[0]["args"] == {
+        "limit": 100,
+        "offset": 0,
+        "recursive": True,
+        "path": "README.md",
+        "lines": [1, 2],
+    }

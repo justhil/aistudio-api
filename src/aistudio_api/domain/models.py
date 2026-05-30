@@ -227,12 +227,31 @@ def _decode_wire_argument_pairs(raw_args: Any) -> Any:
 
 
 def _decode_wire_value(value: Any) -> Any:
-    if isinstance(value, list):
-        if len(value) >= 3 and value[2] is not None:
-            return value[2]
-        decoded = _decode_wire_argument_pairs(value)
-        if decoded != value:
-            return decoded
+    if not isinstance(value, list):
+        return value
+    # google.protobuf.Value JSPB slots (index = field number - 1):
+    #   0 null_value, 1 number_value, 2 string_value,
+    #   3 bool_value, 4 struct_value, 5 list_value
+    if len(value) > 1 and value[1] is not None:
+        return value[1]
+    if len(value) > 2 and value[2] is not None:
+        return value[2]
+    if len(value) > 3 and value[3] is not None:
+        return value[3]
+    if len(value) > 4 and value[4] is not None:
+        return _decode_wire_argument_pairs(value[4])
+    if len(value) > 5 and value[5] is not None:
+        inner = value[5]
+        if isinstance(inner, list) and len(inner) == 1 and isinstance(inner[0], list):
+            inner = inner[0]
+        if isinstance(inner, list):
+            return [_decode_wire_value(item) for item in inner]
+        return inner
+    if value and value[0] is not None:
+        return None
+    decoded = _decode_wire_argument_pairs(value)
+    if decoded != value:
+        return decoded
     return value
 
 

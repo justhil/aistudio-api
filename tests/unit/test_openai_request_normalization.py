@@ -12,13 +12,14 @@ def _normalize(payload: dict):
     return normalize_chat_request(req.messages, req.model)
 
 
-def _is_no_native_function_part(part) -> bool:
+def _no_native_function_part(part) -> bool:
     return part.function_call is None and part.function_response is None
 
 
-def test_assistant_tool_calls_with_null_content_render_as_text_transcript():
-    # AI Studio rejects replayed native function_call parts (403), so tool calls
-    # are preserved as a text transcript instead.
+def test_assistant_tool_calls_with_null_content_are_dropped_from_model_role():
+    # An assistant message that is only a tool call (content empty) carries no
+    # model-role text, so it must not appear as a model turn (and must not leak
+    # the transcript marker into the model's own output pattern).
     norm = _normalize(
         {
             "model": "gemini-3.5-flash",
@@ -39,17 +40,13 @@ def test_assistant_tool_calls_with_null_content_render_as_text_transcript():
         }
     )
 
-    model_content = norm["contents"][1]
-    assert model_content.role == "model"
-    part = model_content.parts[0]
-    assert _is_no_native_function_part(part)
-    assert TOOL_HISTORY_START in part.text
-    assert "get_weather" in part.text
-    assert '"city": "SF"' in part.text
-    assert TOOL_HISTORY_END in part.text
+    assert len(norm["contents"]) == 1
+    assert norm["contents"][0].role == "user"
+    for content in norm["contents"]:
+        assert content.role != "model"
 
 
-def test_tool_role_message_renders_as_text_transcript():
+def test_tool_result_transcript_includes_call_args_in_user_role():
     norm = _normalize(
         {
             "model": "gemini-3.5-flash",
@@ -71,15 +68,18 @@ def test_tool_role_message_renders_as_text_transcript():
         }
     )
 
-    tool_content = norm["contents"][2]
+    tool_content = norm["contents"][-1]
     assert tool_content.role == "user"
     part = tool_content.parts[0]
-    assert _is_no_native_function_part(part)
-    assert "tool_result for: get_weather" in part.text
+    assert _no_native_function_part(part)
+    assert TOOL_HISTORY_START in part.text
+    assert "tool: get_weather" in part.text
+    assert '"city": "SF"' in part.text  # call args folded into the result transcript
     assert '{"temp": 18}' in part.text
+    assert TOOL_HISTORY_END in part.text
 
 
-def test_tool_role_name_resolved_from_prior_assistant_tool_calls():
+def test_tool_result_name_resolved_from_prior_assistant_tool_calls():
     norm = _normalize(
         {
             "model": "gemini-3.5-flash",
@@ -96,8 +96,8 @@ def test_tool_role_name_resolved_from_prior_assistant_tool_calls():
         }
     )
 
-    part = norm["contents"][1].parts[0]
-    assert "tool_result for: lookup" in part.text
+    part = norm["contents"][-1].parts[0]
+    assert "tool: lookup" in part.text
     assert "plain text result" in part.text
 
 
@@ -120,13 +120,13 @@ def test_consecutive_tool_results_merge_into_single_content():
         }
     )
 
-    tool_content = norm["contents"][1]
+    tool_content = norm["contents"][-1]
     assert len(tool_content.parts) == 2
-    assert "tool_result for: f1" in tool_content.parts[0].text
-    assert "tool_result for: f2" in tool_content.parts[1].text
+    assert "tool: f1" in tool_content.parts[0].text
+    assert "tool: f2" in tool_content.parts[1].text
 
 
-def test_assistant_text_and_tool_call_coexist():
+def test_assistant_text_kept_but_tool_call_not_in_model_role():
     norm = _normalize(
         {
             "model": "gemini-3.5-flash",
@@ -142,34 +142,14 @@ def test_assistant_text_and_tool_call_coexist():
         }
     )
 
-    parts = norm["contents"][0].parts
-    assert parts[0].text == "let me check"
-    assert "assistant tool_call: f" in parts[1].text
-    assert '"k": 1' in parts[1].text
+    model_content = norm["contents"][0]
+    assert model_content.role == "model"
+    assert len(model_content.parts) == 1
+    assert model_content.parts[0].text == "let me check"
+    assert TOOL_HISTORY_START not in model_content.parts[0].text
 
 
-def test_invalid_tool_call_arguments_fall_back_to_empty_object():
-    norm = _normalize(
-        {
-            "model": "gemini-3.5-flash",
-            "messages": [
-                {
-                    "role": "assistant",
-                    "content": None,
-                    "tool_calls": [
-                        {"id": "x", "type": "function", "function": {"name": "f", "arguments": "not-json"}}
-                    ],
-                },
-            ],
-        }
-    )
-
-    part = norm["contents"][0].parts[0]
-    assert "assistant tool_call: f" in part.text
-    assert "arguments: {}" in part.text
-
-
-def test_no_native_function_parts_emitted_for_tool_round_trip():
+def test_no_native_function_parts_or_model_role_markers_in_tool_round_trip():
     norm = _normalize(
         {
             "model": "gemini-3.5-flash",
@@ -189,7 +169,9 @@ def test_no_native_function_parts_emitted_for_tool_round_trip():
 
     for content in norm["contents"]:
         for part in content.parts:
-            assert _is_no_native_function_part(part)
+            assert _no_native_function_part(part)
+            if content.role == "model":
+                assert TOOL_HISTORY_START not in (part.text or "")
 
 
 def test_openai_tools_with_ref_and_nullable_union_do_not_crash():
