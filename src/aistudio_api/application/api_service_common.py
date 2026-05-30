@@ -71,6 +71,25 @@ async def try_switch_account() -> bool:
     return result is not None
 
 
+async def try_switch_on_auth_failure() -> bool:
+    """当前账号 Cookie 失效：标记为长冷却并切换到下一个健康账号。
+
+    返回是否成功切换到另一个可用账号。
+    """
+    from aistudio_api.config import settings
+
+    rotator = runtime_state.rotator
+    account_service = runtime_state.account_service
+    if rotator is not None and account_service is not None:
+        active = account_service.get_active_account()
+        if active is not None:
+            rotator.record_auth_failure(
+                active.id,
+                settings.account_auth_failure_cooldown_seconds,
+            )
+    return await try_switch_account()
+
+
 def require_busy_lock():
     busy_lock = runtime_state.busy_lock
     if busy_lock is None:

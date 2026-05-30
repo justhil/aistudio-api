@@ -18,9 +18,10 @@ from aistudio_api.application.api_service_common import (
     record_rotator_event,
     require_busy_lock,
     try_switch_account,
+    try_switch_on_auth_failure,
 )
 from aistudio_api.application.chat_service import cleanup_files, normalize_gemini_request
-from aistudio_api.domain.errors import AistudioError, AuthError, RequestError, UsageLimitExceeded
+from aistudio_api.domain.errors import AccountAuthExpired, AistudioError, AuthError, RequestError, UsageLimitExceeded
 from aistudio_api.infrastructure.gateway.client import AIStudioClient
 
 
@@ -99,6 +100,15 @@ async def handle_gemini_generate_content(
                     continue
                 logger.warning("Gemini 429 限流，无法切换账号")
                 raise HTTPException(429, detail={"message": str(exc), "type": "rate_limit_exceeded"}) from exc
+            except AccountAuthExpired as exc:
+                runtime_state.record(model_path, "errors")
+                last_error = exc
+                record_rotator_event("error")
+                if await try_switch_on_auth_failure():
+                    logger.warning("Gemini 账号 Cookie 失效，已切换账号，重试 %d/%d", attempt + 1, MAX_RETRIES)
+                    continue
+                logger.warning("Gemini 账号 Cookie 失效，无可用账号可切换")
+                raise HTTPException(401, detail={"message": str(exc), "type": "authentication_error"}) from exc
             except AistudioError as exc:
                 runtime_state.record(model_path, "errors")
                 record_rotator_event("error")
@@ -222,6 +232,13 @@ def _build_gemini_streaming_response(*, client: AIStudioClient, normalized: dict
                     except RequestError as exc:
                         if exc.status == 204 and stream_attempt == 0:
                             logger.warning("Gemini stream 收到 204，刷新 capture 后重试一次")
+                            continue
+                        raise
+                    except AccountAuthExpired as exc:
+                        runtime_state.record(normalized["model"], "errors")
+                        record_rotator_event("error")
+                        if not has_yielded_data and stream_attempt < MAX_RETRIES - 1 and await try_switch_on_auth_failure():
+                            logger.warning("Gemini stream 账号 Cookie 失效，已切换账号，重试 %d/%d", stream_attempt + 1, MAX_RETRIES)
                             continue
                         raise
                     except AuthError as exc:

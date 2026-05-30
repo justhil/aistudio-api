@@ -55,6 +55,13 @@ class AccountStats:
         self.errors += 1
         self.last_used = time.time()
 
+    def record_auth_failure(self, cooldown_seconds: int) -> None:
+        # Cookie 失效：计为错误并进入较长冷却，避免轮询反复选中死账号。
+        self.requests += 1
+        self.errors += 1
+        self.last_used = time.time()
+        self.cooldown_until = time.time() + cooldown_seconds
+
 
 class AccountRotator:
     """多账号轮询管理器。
@@ -240,6 +247,13 @@ class AccountRotator:
         if account_id not in self._stats:
             self._stats[account_id] = AccountStats(account_id=account_id)
         self._stats[account_id].record_error()
+
+    def record_auth_failure(self, account_id: str, cooldown_seconds: int = 600) -> None:
+        """记录账号 Cookie 失效，进入较长冷却期以便轮换到其他账号。"""
+        if account_id not in self._stats:
+            self._stats[account_id] = AccountStats(account_id=account_id)
+        self._stats[account_id].record_auth_failure(cooldown_seconds)
+        logger.warning("账号 %s Cookie 失效，冷却 %ds 后重试，请重新导入 Cookies", account_id, cooldown_seconds)
 
     def add_account(self, account_id: str) -> None:
         """添加新账号时初始化统计。"""

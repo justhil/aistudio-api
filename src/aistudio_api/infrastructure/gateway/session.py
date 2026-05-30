@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from aistudio_api.config import settings
+from aistudio_api.domain.errors import AccountAuthExpired
 from aistudio_api.infrastructure.account.account_store import AccountStore
 from aistudio_api.infrastructure.browser.browser_engine import (
     build_browser_context_options,
@@ -745,7 +746,7 @@ class BrowserSession:
         if not _is_aistudio_url(self._hook_page.url or ""):
             self._goto_aistudio_sync(self._hook_page)
         elif _is_google_signin_url(self._hook_page.url or ""):
-            raise RuntimeError(
+            raise AccountAuthExpired(
                 f"Cookie 认证失败，当前处于 Google 登录页，请重新导入账号 Cookies。 (url={self._hook_page.url})"
             )
         self._install_hooks_sync(self._hook_page)
@@ -1154,7 +1155,7 @@ mw:((hash) => {
                 # 检查是否被重定向到登录页
                 current_url = page.url or ""
                 if _is_google_signin_url(current_url):
-                    raise RuntimeError(
+                    raise AccountAuthExpired(
                         f"Cookie 认证失败，已被重定向到 Google 登录页。"
                         f" (url={current_url})"
                     )
@@ -1165,7 +1166,7 @@ mw:((hash) => {
                     page.wait_for_timeout(1000)
                     current_url = page.url or ""
                     if _is_google_signin_url(current_url):
-                        raise RuntimeError(
+                        raise AccountAuthExpired(
                             f"Cookie 认证失败，已被重定向到 Google 登录页。"
                             f" (url={current_url})"
                         )

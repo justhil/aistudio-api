@@ -21,6 +21,14 @@ class AuthError(AistudioError):
     pass
 
 
+class AccountAuthExpired(AuthError):
+    """账号 Cookie 失效，浏览器被重定向到 Google 登录页。
+
+    与一般 AuthError 区分：这类错误重试同一账号无意义，应直接轮换账号。
+    """
+    pass
+
+
 class UsageLimitExceeded(AistudioError):
     pass
 
