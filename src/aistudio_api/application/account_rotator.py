@@ -255,6 +255,18 @@ class AccountRotator:
         self._stats[account_id].record_auth_failure(cooldown_seconds)
         logger.warning("账号 %s Cookie 失效，冷却 %ds 后重试，请重新导入 Cookies", account_id, cooldown_seconds)
 
+    def reset_cooldown(self, account_id: str) -> bool:
+        """手动解除账号冷却，使其立即可被轮询选中。返回该账号此前是否处于冷却中。"""
+        stats = self._stats.get(account_id)
+        if stats is None:
+            self._stats[account_id] = AccountStats(account_id=account_id)
+            return False
+        was_cooling = not stats.is_available()
+        stats.cooldown_until = 0.0
+        if was_cooling:
+            logger.info("账号 %s 冷却已手动解除", account_id)
+        return was_cooling
+
     def add_account(self, account_id: str) -> None:
         """添加新账号时初始化统计。"""
         if account_id not in self._stats:

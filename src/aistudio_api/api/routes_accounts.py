@@ -149,12 +149,31 @@ async def activate_account(
 async def delete_account(
     account_id: str,
     account_service=Depends(get_account_service),
+    runtime_state=Depends(get_runtime_state),
 ):
     """删除账号。"""
     success = account_service.delete_account(account_id)
     if not success:
         raise HTTPException(status_code=404, detail="账号不存在")
+    if runtime_state.rotator is not None:
+        runtime_state.rotator.remove_account(account_id)
     return {"ok": True}
+
+
+@router.post("/{account_id}/reset-cooldown")
+async def reset_account_cooldown(
+    account_id: str,
+    account_service=Depends(get_account_service),
+    runtime_state=Depends(get_runtime_state),
+):
+    """手动解除账号冷却，使其立即重新可用。"""
+    if account_service.get_account(account_id) is None:
+        raise HTTPException(status_code=404, detail="账号不存在")
+    rotator = runtime_state.rotator
+    if rotator is None:
+        raise HTTPException(status_code=503, detail="轮询器未初始化")
+    was_cooling = rotator.reset_cooldown(account_id)
+    return {"ok": True, "was_cooling": was_cooling}
 
 
 @router.put("/{account_id}", response_model=AccountResponse)
@@ -221,6 +240,11 @@ async def import_cookies(
             log.info("[import-cookies] injected %d cookies, saved auth.json", count)
     except Exception as e:
         log.warning("[import-cookies] browser injection failed: %s", e)
+
+    # 同步轮询器：新账号初始化统计；重新导入有效凭据后解除残留冷却（如 Cookie 失效后的长冷却）。
+    if runtime_state.rotator is not None:
+        runtime_state.rotator.add_account(account.id)
+        runtime_state.rotator.reset_cooldown(account.id)
 
     return ImportCookiesResponse(
         account_id=account.id,

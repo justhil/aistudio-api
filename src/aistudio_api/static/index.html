@@ -359,8 +359,8 @@
             </div>
           </div>
           <div class="card">
-            <div class="card-head"><span>账号池</span><span style="font-size:13px;color:var(--muted)"
-                x-text="accountRows.length+' 个账号'"></span></div>
+            <div class="card-head"><span>账号池</span><div style="display:flex;align-items:center;gap:12px"><span style="font-size:13px;color:var(--muted)"
+                x-text="accountRows.length+' 个账号'"></span><button class="btn btn-sm" @click="refreshAccounts()">刷新</button></div></div>
             <div class="table-wrap">
               <table>
                 <thead>
@@ -384,10 +384,14 @@
                       <td><span class="badge badge-green" x-text="a.success||0"></span></td>
                       <td><span class="badge" :class="(a.rate_limited||0)>0?'badge-red':'badge-gray'"
                           x-text="a.rate_limited||0"></span></td>
-                      <td><span class="badge badge-green" x-show="a.id===activeId">激活</span><span
-                          class="badge badge-gray" x-show="a.id!==activeId">待命</span></td>
+                      <td><span class="badge badge-amber" x-show="a.is_available===false"
+                          x-text="'冷却中 '+(a.cooldown_remaining||0)+'s'"></span><span class="badge badge-green"
+                          x-show="a.is_available!==false && a.id===activeId">激活</span><span class="badge badge-gray"
+                          x-show="a.is_available!==false && a.id!==activeId">待命</span></td>
                       <td>
                         <div style="display:flex;gap:6px;flex-wrap:wrap">
+                          <button class="btn btn-sm" x-show="a.is_available===false"
+                            @click="resetCooldown(a.id)">解除冷却</button>
                           <button class="btn btn-sm" x-show="a.id!==activeId"
                             @click="activateAccount(a.id)">手动激活</button>
                           <button class="btn btn-sm" @click="openEdit(a)">编辑</button>

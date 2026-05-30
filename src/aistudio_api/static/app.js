@@ -170,6 +170,8 @@ function app() {
     async saveRotation() { try { await this.apiFetch('/rotation/mode', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mode: this.rotCfg.mode, cooldown_seconds: this.rotCfg.cooldown }) }); this.showToast('已保存'); this.loadRotation() } catch (e) { this.showToast('保存失败') } },
     async forceNext() { try { await this.apiFetch('/rotation/next', { method: 'POST' }); this.showToast('已切换账号'); this.loadAccounts() } catch (e) { this.showToast('切换失败') } },
     async activateAccount(id) { try { await this.apiFetch(`/accounts/${id}/activate`, { method: 'POST' }); this.showToast('已激活'); this.loadAccounts(); this.loadRotation() } catch (e) { this.showToast('激活失败') } },
+    async resetCooldown(id) { try { const r = await this.apiFetch(`/accounts/${id}/reset-cooldown`, { method: 'POST' }); const d = await r.json().catch(() => ({})); if (!r.ok) { this.showToast(d.detail || '解除失败'); return } this.showToast(d.was_cooling ? '已解除冷却' : '该账号未在冷却'); this.loadAccounts(); this.loadRotation() } catch (e) { this.showToast('网络错误') } },
+    async refreshAccounts() { await Promise.all([this.loadAccounts(), this.loadRotation()]); this.showToast('已刷新') },
     openEdit(a) { this.editModal = { open: true, id: a.id, name: a.name || '', email: a.email || '', cookies: '', saving: false } },
     async saveEdit() {
       const id = this.editModal.id;

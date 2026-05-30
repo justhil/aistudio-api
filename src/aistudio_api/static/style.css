@@ -71,6 +71,7 @@ tr:last-child td{border-bottom:none}
 .badge-green{background:var(--green-bg);color:#065f46}
 .badge-red{background:#fef2f2;color:#991b1b}
 .badge-gray{background:#f3f4f6;color:#374151}
+.badge-amber{background:#fffbeb;color:#92400e}
 .btn{padding:8px 16px;border-radius:8px;border:1px solid var(--border);background:#fff;cursor:pointer;font-size:14px;font-weight:500;transition:.15s;font-family:inherit;display:inline-flex;align-items:center;gap:6px}
 .btn:hover{background:var(--hover)}
 .btn-primary{background:var(--green);color:#fff;border-color:var(--green)}
