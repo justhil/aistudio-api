@@ -11,6 +11,7 @@ function app() {
     cfg: { thinking: 'off', search: 'off', stream: 'on', temperature: 1.0, topP: 0.95, maxTokens: 32768, safety: 'on' },
     toast: { show: false, msg: '', t: null },
     cookieModal: { open: false, cookies: '', name: '', email: '', importing: false },
+    editModal: { open: false, id: '', name: '', email: '', cookies: '', saving: false },
     loginInProgress: false,
 
     async init() {
@@ -169,6 +170,48 @@ function app() {
     async saveRotation() { try { await this.apiFetch('/rotation/mode', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mode: this.rotCfg.mode, cooldown_seconds: this.rotCfg.cooldown }) }); this.showToast('已保存'); this.loadRotation() } catch (e) { this.showToast('保存失败') } },
     async forceNext() { try { await this.apiFetch('/rotation/next', { method: 'POST' }); this.showToast('已切换账号'); this.loadAccounts() } catch (e) { this.showToast('切换失败') } },
     async activateAccount(id) { try { await this.apiFetch(`/accounts/${id}/activate`, { method: 'POST' }); this.showToast('已激活'); this.loadAccounts(); this.loadRotation() } catch (e) { this.showToast('激活失败') } },
+    openEdit(a) { this.editModal = { open: true, id: a.id, name: a.name || '', email: a.email || '', cookies: '', saving: false } },
+    async saveEdit() {
+      const id = this.editModal.id;
+      if (!id) return;
+      const name = this.editModal.name.trim();
+      if (!name) { this.showToast('账号名称不能为空'); return }
+      this.editModal.saving = true;
+      try {
+        const raw = this.editModal.cookies.trim();
+        if (raw) {
+          // 重新导入 cookies：覆盖已有账号（含名称/邮箱），刷新凭据
+          const cookies = raw.split(/[\r\n]+/).map(l => l.trim()).filter(Boolean).join('; ');
+          const body = { cookies, account_id: id, name };
+          const email = this.editModal.email.trim();
+          if (email) body.email = email;
+          const r = await this.apiFetch('/accounts/import-cookies', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+          const d = await r.json().catch(() => ({}));
+          if (!r.ok) { this.showToast(d.detail || '更新失败'); return }
+          this.showToast(`已更新凭据: ${d.cookie_count} 个 cookie`);
+        } else {
+          // 仅更新名称
+          const r = await this.apiFetch(`/accounts/${id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name }) });
+          const d = await r.json().catch(() => ({}));
+          if (!r.ok) { this.showToast(d.detail || '更新失败'); return }
+          this.showToast('已保存');
+        }
+        this.editModal.open = false;
+        this.loadAccounts(); this.loadRotation();
+      } catch (e) { this.showToast('网络错误') }
+      finally { this.editModal.saving = false }
+    },
+    async deleteAccount(a) {
+      const label = a.email || a.name || a.id;
+      if (!confirm(`确定要删除账号「${label}」吗？此操作不可恢复。`)) return;
+      try {
+        const r = await this.apiFetch(`/accounts/${a.id}`, { method: 'DELETE' });
+        const d = await r.json().catch(() => ({}));
+        if (!r.ok) { this.showToast(d.detail || '删除失败'); return }
+        this.showToast('已删除');
+        this.loadAccounts(); this.loadRotation();
+      } catch (e) { this.showToast('网络错误') }
+    },
     async addAccount() {
       if (this.loginInProgress) return;
       this.loginInProgress = true;

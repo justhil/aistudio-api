@@ -386,8 +386,14 @@
                           x-text="a.rate_limited||0"></span></td>
                       <td><span class="badge badge-green" x-show="a.id===activeId">激活</span><span
                           class="badge badge-gray" x-show="a.id!==activeId">待命</span></td>
-                      <td><button class="btn btn-sm" x-show="a.id!==activeId"
-                          @click="activateAccount(a.id)">手动激活</button></td>
+                      <td>
+                        <div style="display:flex;gap:6px;flex-wrap:wrap">
+                          <button class="btn btn-sm" x-show="a.id!==activeId"
+                            @click="activateAccount(a.id)">手动激活</button>
+                          <button class="btn btn-sm" @click="openEdit(a)">编辑</button>
+                          <button class="btn btn-sm btn-danger" @click="deleteAccount(a)">删除</button>
+                        </div>
+                      </td>
                     </tr>
                   </template>
                   <tr x-show="!accountRows.length">
@@ -432,6 +438,41 @@
         <button class="btn btn-primary" :disabled="cookieModal.importing" @click="importCookies()">
           <span x-show="!cookieModal.importing">导入</span>
           <span x-show="cookieModal.importing">导入中...</span>
+        </button>
+      </div>
+    </div>
+  </div>
+  <!-- Edit Account Modal -->
+  <div class="modal-overlay" x-show="editModal.open" x-cloak @click.self="editModal.open=false"
+    x-transition.opacity>
+    <div class="modal" x-show="editModal.open" x-transition>
+      <div class="modal-head">
+        <span>编辑账号</span>
+        <button class="modal-close" @click="editModal.open=false">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div style="display:flex;gap:12px">
+          <div class="modal-field" style="flex:1">
+            <label>账号名称</label>
+            <input class="modal-input" x-model="editModal.name" placeholder="My Account">
+          </div>
+          <div class="modal-field" style="flex:1">
+            <label>邮箱 <span style="color:var(--muted);font-weight:400">(仅重新导入 Cookies 时生效)</span></label>
+            <input class="modal-input" x-model="editModal.email" placeholder="user@gmail.com">
+          </div>
+        </div>
+        <div class="modal-field">
+          <label>重新导入 Cookies <span style="color:var(--muted);font-weight:400">(可选，填写则覆盖该账号凭据)</span></label>
+          <textarea class="modal-textarea" x-model="editModal.cookies"
+            placeholder="留空则仅修改名称。填写时支持分号或换行分隔：&#10;SID=xxx; SSID=xxx; HSID=xxx; ..."
+            rows="6"></textarea>
+        </div>
+      </div>
+      <div class="modal-foot">
+        <button class="btn" @click="editModal.open=false">取消</button>
+        <button class="btn btn-primary" :disabled="editModal.saving" @click="saveEdit()">
+          <span x-show="!editModal.saving">保存</span>
+          <span x-show="editModal.saving">保存中...</span>
         </button>
       </div>
     </div>
