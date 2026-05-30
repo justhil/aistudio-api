@@ -319,3 +319,154 @@ def test_normalize_openai_tools_omits_required_from_function_schema_wire():
 
     schema = normalize_openai_tools(req.tools)[0][1][0][2]
     assert len(schema) <= 7 or schema[7] is None
+
+
+def _iter_wire_schemas(schema):
+    if not isinstance(schema, list) or not schema:
+        return
+    yield schema
+    if len(schema) > 5:
+        yield from _iter_wire_schemas(schema[5])
+    if len(schema) > 6 and isinstance(schema[6], list):
+        for property_entry in schema[6]:
+            if isinstance(property_entry, list) and len(property_entry) >= 2:
+                yield from _iter_wire_schemas(property_entry[1])
+
+
+def test_normalize_openai_tools_sanitizes_nullable_unions_and_refs():
+    req = ChatRequest(
+        messages=[{"role": "user", "content": "hello"}],
+        tools=[
+            {
+                "type": "function",
+                "function": {
+                    "name": "screen_stock",
+                    "description": "Screen stocks",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "symbol": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+                            "window": {"type": ["integer", "null"]},
+                            "filters": {"type": "array", "items": {"$ref": "#/$defs/Filter"}},
+                            "mode": {"enum": ["fast", "deep"]},
+                            "payload": {"allOf": [{"$ref": "#/$defs/Payload"}]},
+                        },
+                        "required": ["symbol"],
+                        "propertyOrdering": ["symbol", "window", "filters", "mode", "payload"],
+                        "$defs": {
+                            "Filter": {
+                                "type": "object",
+                                "properties": {
+                                    "field": {"type": "string"},
+                                    "threshold": {"oneOf": [{"type": "number"}, {"type": "null"}]},
+                                    "enabled": {"type": ["boolean", "null"]},
+                                },
+                                "required": ["field", "threshold"],
+                            },
+                            "Payload": {
+                                "type": "object",
+                                "properties": {"notes": {"type": ["string", "null"]}},
+                            },
+                        },
+                    },
+                },
+            }
+        ],
+    )
+
+    schema = normalize_openai_tools(req.tools)[0][1][0][2]
+    properties = {name: value for name, value in schema[6]}
+
+    assert properties["symbol"] == [1]
+    assert properties["window"] == [3]
+    assert properties["mode"] == [1]
+    assert properties["filters"][0] == 5
+    filter_properties = {name: value for name, value in properties["filters"][5][6]}
+    assert filter_properties["field"] == [1]
+    assert filter_properties["threshold"] == [2]
+    assert filter_properties["enabled"] == [4]
+    payload_properties = {name: value for name, value in properties["payload"][6]}
+    assert payload_properties["notes"] == [1]
+    assert all(item[0] != 0 for item in _iter_wire_schemas(schema))
+    assert len(schema) <= 7 or schema[7] is None
+
+
+def test_normalize_gemini_function_declarations_sanitize_schema_before_encoding():
+    req = GeminiGenerateContentRequest(
+        contents=[GeminiContent(role="user", parts=[GeminiPart(text="hello")])],
+        tools=[
+            {
+                "functionDeclarations": [
+                    {
+                        "name": "lookup",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {
+                                "query": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+                            },
+                        },
+                    }
+                ]
+            }
+        ],
+    )
+
+    schema = normalize_gemini_request(req, "models/gemini-3.5-flash")["tools"][0][1][0][2]
+    assert schema[6] == [["query", [1]]]
+
+
+def test_normalize_gemini_response_schema_sanitizes_nullable_unions():
+    req = GeminiGenerateContentRequest(
+        contents=[GeminiContent(role="user", parts=[GeminiPart(text="hello")])],
+        generationConfig=GeminiGenerationConfig(
+            responseSchema={
+                "type": "object",
+                "properties": {
+                    "answer": {"type": ["string", "null"]},
+                    "score": {"anyOf": [{"type": "number"}, {"type": "null"}]},
+                },
+            },
+        ),
+    )
+
+    schema = normalize_gemini_request(req, "models/gemini-3.5-flash")["generation_config_overrides"][
+        "response_schema"
+    ]
+    assert schema[6] == [["answer", [1]], ["score", [2]]]
+
+
+def test_normalize_gemini_request_preserves_function_call_parts():
+    req = GeminiGenerateContentRequest(
+        contents=[
+            GeminiContent(role="user", parts=[GeminiPart(text="weather?")]),
+            GeminiContent(
+                role="model",
+                parts=[GeminiPart(functionCall={"name": "get_weather", "args": {"city": "SF"}, "id": "fc1"})],
+            ),
+            GeminiContent(
+                role="user",
+                parts=[GeminiPart(functionResponse={"name": "get_weather", "response": {"temp": 18}, "id": "fc1"})],
+            ),
+        ],
+    )
+
+    norm = normalize_gemini_request(req, "gemini-3.5-flash")
+    model_part = norm["contents"][1].parts[0]
+    response_part = norm["contents"][2].parts[0]
+    assert model_part.function_call == ("get_weather", {"city": "SF"}, "fc1")
+    assert response_part.function_response == ("get_weather", {"temp": 18}, "fc1")
+
+
+def test_normalize_gemini_function_call_without_id_or_args():
+    req = GeminiGenerateContentRequest(
+        contents=[
+            GeminiContent(
+                role="model",
+                parts=[GeminiPart(functionCall={"name": "ping"})],
+            ),
+        ],
+    )
+
+    norm = normalize_gemini_request(req, "gemini-3.5-flash")
+    part = norm["contents"][0].parts[0]
+    assert part.function_call == ("ping", {})

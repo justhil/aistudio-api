@@ -12,10 +12,24 @@ class MessageContent(BaseModel):
     image_url: Optional[dict] = None
 
 
+class OpenAIToolCallFunction(BaseModel):
+    name: Optional[str] = None
+    arguments: Optional[str] = None
+
+
+class OpenAIMessageToolCall(BaseModel):
+    id: Optional[str] = None
+    type: Optional[str] = "function"
+    function: Optional[OpenAIToolCallFunction] = None
+
+
 class Message(BaseModel):
     role: str
-    content: str | list[MessageContent]
+    content: Optional[str | list[MessageContent]] = None
     reasoning_content: Optional[str] = None
+    name: Optional[str] = None
+    tool_calls: Optional[list[OpenAIMessageToolCall]] = None
+    tool_call_id: Optional[str] = None
 
 
 class OpenAIFunctionDefinition(BaseModel):
@@ -73,10 +87,24 @@ class GeminiFileData(BaseModel):
     fileUri: str
 
 
+class GeminiFunctionCall(BaseModel):
+    name: str
+    args: Optional[dict[str, Any]] = None
+    id: Optional[str] = None
+
+
+class GeminiFunctionResponse(BaseModel):
+    name: str
+    response: Optional[Any] = None
+    id: Optional[str] = None
+
+
 class GeminiPart(BaseModel):
     text: Optional[str] = None
     inlineData: Optional[GeminiInlineData] = None
     fileData: Optional[GeminiFileData] = None
+    functionCall: Optional[GeminiFunctionCall] = None
+    functionResponse: Optional[GeminiFunctionResponse] = None
     thought: Optional[bool] = None
     thoughtSignature: Optional[str] = None
 

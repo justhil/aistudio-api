@@ -63,15 +63,42 @@ def normalize_chat_request(messages, requested_model: str, tmp_dir: str = "/tmp"
     capture_images: list[str] = []
     cleanup_paths: list[str] = []
     saw_images = False
+    tool_id_to_name = _openai_tool_id_name_map(messages)
+    pending_tool_parts: list[AistudioPart] = []
+
+    def flush_tool_parts():
+        if pending_tool_parts:
+            contents.append(AistudioContent(role="user", parts=list(pending_tool_parts)))
+            pending_tool_parts.clear()
 
     for msg in messages:
         role = (msg.role or "user").lower()
         if role in ("system", "developer"):
+            flush_tool_parts()
             text = _message_text_content(msg.content)
             if text:
                 system_texts.append(text)
                 capture_texts.append(text)
             continue
+
+        # OpenAI 工具结果：role=tool，转为 function_response Part，
+        # 与官方 Gemini 语义一致（归入 user/function 角色），多个连续结果合并。
+        if role == "tool":
+            name = tool_id_to_name.get(msg.tool_call_id or "") or msg.name or "unknown_function"
+            response = _openai_tool_result_response(msg.content)
+            pending_tool_parts.append(
+                AistudioPart(
+                    function_response=(name, response, msg.tool_call_id)
+                    if msg.tool_call_id
+                    else (name, response)
+                )
+            )
+            text = _message_text_content(msg.content)
+            if text:
+                capture_texts.append(text)
+            continue
+
+        flush_tool_parts()
 
         parts: list[AistudioPart] = []
         text_parts: list[str] = []
@@ -101,6 +128,20 @@ def normalize_chat_request(messages, requested_model: str, tmp_dir: str = "/tmp"
                         image_paths.append(path)
                         cleanup_paths.append(path)
 
+        # OpenAI 助手工具调用：role=assistant + tool_calls，转为 function_call Part。
+        if role == "assistant" and msg.tool_calls:
+            for tool_call in msg.tool_calls:
+                function = tool_call.function
+                if function is None or not function.name:
+                    continue
+                args = _parse_tool_call_arguments(function.arguments)
+                parts.append(
+                    AistudioPart(
+                        function_call=(function.name, args, tool_call.id)
+                        if tool_call.id
+                        else (function.name, args)
+                    )
+                )
 
         for image_path in image_paths:
             parts.append(_image_path_to_part(image_path))
@@ -115,6 +156,7 @@ def normalize_chat_request(messages, requested_model: str, tmp_dir: str = "/tmp"
             saw_images = True
             capture_images.extend(image_paths)
 
+    flush_tool_parts()
     capture_prompt = "\n".join(capture_texts) if capture_texts else "你好"
     model = requested_model
     if model.startswith("gpt-") or model.startswith("openai/"):
@@ -128,6 +170,40 @@ def normalize_chat_request(messages, requested_model: str, tmp_dir: str = "/tmp"
         "capture_images": capture_images,
         "cleanup_paths": cleanup_paths,
     }
+
+
+def _openai_tool_id_name_map(messages) -> dict[str, str]:
+    mapping: dict[str, str] = {}
+    for msg in messages:
+        if (msg.role or "").lower() != "assistant" or not msg.tool_calls:
+            continue
+        for tool_call in msg.tool_calls:
+            if tool_call.id and tool_call.function and tool_call.function.name:
+                mapping[tool_call.id] = tool_call.function.name
+    return mapping
+
+
+def _parse_tool_call_arguments(arguments) -> dict:
+    if isinstance(arguments, dict):
+        return arguments
+    if isinstance(arguments, str) and arguments.strip():
+        try:
+            parsed = json.loads(arguments)
+        except json.JSONDecodeError:
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+    return {}
+
+
+def _openai_tool_result_response(content) -> dict[str, Any]:
+    text = _message_text_content(content)
+    if text:
+        try:
+            parsed = json.loads(text)
+        except json.JSONDecodeError:
+            return {"result": text}
+        return parsed if isinstance(parsed, dict) else {"result": parsed}
+    return {"result": ""}
 
 
 def _message_text_content(content) -> str | None:
@@ -166,6 +242,7 @@ def inline_data_to_file(mime_type: str, data: str, tmp_dir: str = "/tmp") -> str
 
 
 def encode_schema_to_wire(schema: dict, *, include_required: bool = True) -> list:
+    schema = _sanitize_schema_for_wire(schema)
     schema_type = schema.get("type")
     type_code = SCHEMA_TYPE_CODES.get(schema_type, 0)
     wire = [type_code]
@@ -620,24 +697,141 @@ def _anthropic_tool_result_text(content) -> str:
     return ""
 
 
-def _sanitize_schema_for_wire(schema: dict | None) -> dict:
+def _infer_schema_type_from_value(value: Any) -> str:
+    if isinstance(value, bool):
+        return "boolean"
+    if isinstance(value, int):
+        return "integer"
+    if isinstance(value, float):
+        return "number"
+    if isinstance(value, list):
+        return "array"
+    if isinstance(value, dict):
+        return "object"
+    return "string"
+
+
+def _resolve_json_schema_ref(ref: str, root_schema: dict) -> dict | None:
+    if not ref.startswith("#/"):
+        return None
+
+    current: Any = root_schema
+    for raw_token in ref[2:].split("/"):
+        token = raw_token.replace("~1", "/").replace("~0", "~")
+        if not isinstance(current, dict) or token not in current:
+            return None
+        current = current[token]
+    return current if isinstance(current, dict) else None
+
+
+def _merge_sanitized_object_schemas(base: dict, update: dict) -> dict:
+    if base.get("type") != "object" or update.get("type") != "object":
+        return dict(update)
+
+    merged = dict(base)
+    merged_properties = dict(base.get("properties") or {})
+    merged_properties.update(update.get("properties") or {})
+    merged["properties"] = merged_properties
+
+    required: list[str] = []
+    for schema in (base, update):
+        for name in schema.get("required") or []:
+            if isinstance(name, str) and name in merged_properties and name not in required:
+                required.append(name)
+    if required:
+        merged["required"] = required
+
+    property_ordering: list[str] = []
+    for schema in (base, update):
+        for name in schema.get("propertyOrdering") or []:
+            if isinstance(name, str) and name in merged_properties and name not in property_ordering:
+                property_ordering.append(name)
+    if property_ordering:
+        merged["propertyOrdering"] = property_ordering
+
+    return merged
+
+
+def _sanitize_schema_for_wire(
+    schema: Any,
+    *,
+    root_schema: dict | None = None,
+    seen_refs: set[str] | None = None,
+) -> dict:
     if not isinstance(schema, dict):
         return {"type": "object", "properties": {}}
+
+    root_schema = root_schema or schema
+    seen_refs = seen_refs or set()
+
+    ref = schema.get("$ref")
+    if isinstance(ref, str):
+        target = _resolve_json_schema_ref(ref, root_schema)
+        if target is not None and ref not in seen_refs:
+            sibling_overrides = {
+                key: value
+                for key, value in schema.items()
+                if key not in {"$ref", "$defs", "definitions"}
+            }
+            merged_target = dict(target)
+            merged_target.update(sibling_overrides)
+            return _sanitize_schema_for_wire(
+                merged_target,
+                root_schema=root_schema,
+                seen_refs=seen_refs | {ref},
+            )
+
+    all_of = schema.get("allOf")
+    if isinstance(all_of, list):
+        merged: dict | None = None
+        for variant in all_of:
+            sanitized_variant = _sanitize_schema_for_wire(
+                variant,
+                root_schema=root_schema,
+                seen_refs=seen_refs,
+            )
+            merged = sanitized_variant if merged is None else _merge_sanitized_object_schemas(merged, sanitized_variant)
+        if merged is not None:
+            sibling_overrides = {
+                key: value
+                for key, value in schema.items()
+                if key not in {"allOf", "$defs", "definitions"}
+            }
+            if sibling_overrides:
+                merged = _merge_sanitized_object_schemas(
+                    merged,
+                    _sanitize_schema_for_wire(
+                        sibling_overrides,
+                        root_schema=root_schema,
+                        seen_refs=seen_refs,
+                    ),
+                )
+            return merged
 
     variants = schema.get("anyOf") or schema.get("oneOf")
     if isinstance(variants, list):
         for variant in variants:
             if isinstance(variant, dict) and variant.get("type") != "null":
-                return _sanitize_schema_for_wire(variant)
+                return _sanitize_schema_for_wire(
+                    variant,
+                    root_schema=root_schema,
+                    seen_refs=seen_refs,
+                )
 
     schema_type = schema.get("type")
     if isinstance(schema_type, list):
         schema_type = next((item for item in schema_type if item != "null"), None)
-    if schema_type not in SCHEMA_TYPE_CODES:
+    if not isinstance(schema_type, str) or schema_type not in SCHEMA_TYPE_CODES:
         if isinstance(schema.get("properties"), dict):
             schema_type = "object"
         elif isinstance(schema.get("items"), dict):
             schema_type = "array"
+        elif isinstance(schema.get("enum"), list):
+            schema_type = _infer_schema_type_from_value(
+                next((item for item in schema["enum"] if item is not None), "")
+            )
+        elif "const" in schema and schema.get("const") is not None:
+            schema_type = _infer_schema_type_from_value(schema["const"])
         else:
             schema_type = "string"
 
@@ -648,13 +842,29 @@ def _sanitize_schema_for_wire(schema: dict | None) -> dict:
         if isinstance(raw_properties, dict):
             for name, prop in raw_properties.items():
                 if isinstance(name, str):
-                    properties[name] = _sanitize_schema_for_wire(prop if isinstance(prop, dict) else None)
+                    properties[name] = _sanitize_schema_for_wire(
+                        prop,
+                        root_schema=root_schema,
+                        seen_refs=seen_refs,
+                    )
         sanitized["properties"] = properties
         required = schema.get("required")
         if isinstance(required, list):
             sanitized["required"] = [name for name in required if isinstance(name, str) and name in properties]
+        property_ordering = schema.get("propertyOrdering")
+        if isinstance(property_ordering, list):
+            sanitized["propertyOrdering"] = [
+                name for name in property_ordering if isinstance(name, str) and name in properties
+            ]
     elif schema_type == "array":
-        sanitized["items"] = _sanitize_schema_for_wire(schema.get("items") if isinstance(schema.get("items"), dict) else None)
+        items = schema.get("items")
+        if isinstance(items, list):
+            items = next((item for item in items if isinstance(item, dict)), None)
+        sanitized["items"] = _sanitize_schema_for_wire(
+            items,
+            root_schema=root_schema,
+            seen_refs=seen_refs,
+        )
     return sanitized
 
 
@@ -704,6 +914,25 @@ def normalize_gemini_request(req, requested_model: str, tmp_dir: str = "/tmp") -
                 image_path = inline_data_to_file(part.inlineData.mimeType, part.inlineData.data, tmp_dir=tmp_dir)
                 content_images.append(image_path)
                 cleanup_paths.append(image_path)
+                continue
+            if part.functionCall is not None:
+                call = part.functionCall
+                args = call.args or {}
+                parts.append(
+                    AistudioPart(
+                        function_call=(call.name, args, call.id) if call.id else (call.name, args),
+                        thought_signature=part.thoughtSignature,
+                    )
+                )
+                continue
+            if part.functionResponse is not None:
+                fr = part.functionResponse
+                response = fr.response if fr.response is not None else {}
+                parts.append(
+                    AistudioPart(
+                        function_response=(fr.name, response, fr.id) if fr.id else (fr.name, response),
+                    )
+                )
                 continue
             if part.fileData is not None:
                 raise ValueError("fileData is not supported yet")
