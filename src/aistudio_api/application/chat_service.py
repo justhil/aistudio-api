@@ -335,6 +335,65 @@ def _normalize_gemini_thinking_config(value: Any) -> list[Any] | dict[str, Any]:
     return AistudioThinkingConfig(level=level, mode=int(raw_mode)).to_wire()
 
 
+_OPENAI_THINKING_EFFORT_LEVELS = {
+    "minimal": ThinkingLevel.MINIMAL,
+    "off": ThinkingLevel.MINIMAL,
+    "none": ThinkingLevel.MINIMAL,
+    "low": ThinkingLevel.LOW,
+    "medium": ThinkingLevel.MEDIUM,
+    "high": ThinkingLevel.HIGH,
+}
+
+
+def _budget_tokens_to_effort(budget: Any) -> str | None:
+    if not isinstance(budget, (int, float)):
+        return None
+    if budget <= 0:
+        return "minimal"
+    if budget < 4096:
+        return "low"
+    if budget < 16384:
+        return "medium"
+    return "high"
+
+
+def resolve_openai_thinking_config(req) -> list | None:
+    """从 OpenAI 请求解析思考等级，返回 wire thinking_config。
+
+    兼容多种下游写法，优先级：reasoning_effort > reasoning.effort > thinking。
+    - reasoning_effort: "minimal"|"low"|"medium"|"high"|"off"|"none"
+    - reasoning: {"effort": "..."}
+    - thinking: "high" 或 {"thinkingLevel"|"level": ...} 或 Anthropic 式
+      {"type": "enabled", "budget_tokens": N}
+    """
+    effort: Any = None
+
+    reasoning_effort = getattr(req, "reasoning_effort", None)
+    reasoning = getattr(req, "reasoning", None)
+    thinking = getattr(req, "thinking", None)
+
+    if reasoning_effort:
+        effort = reasoning_effort
+    elif isinstance(reasoning, dict) and reasoning.get("effort"):
+        effort = reasoning.get("effort")
+    elif thinking is not None:
+        if isinstance(thinking, str):
+            effort = thinking
+        elif isinstance(thinking, dict):
+            level = thinking.get("thinkingLevel") or thinking.get("level")
+            if level is not None:
+                effort = level
+            elif thinking.get("type") == "enabled":
+                effort = _budget_tokens_to_effort(thinking.get("budget_tokens"))
+
+    if not effort:
+        return None
+    level = _OPENAI_THINKING_EFFORT_LEVELS.get(str(effort).strip().lower())
+    if level is None:
+        return None
+    return AistudioThinkingConfig(level=level, mode=1).to_wire()
+
+
 def _normalize_gemini_image_config(value: Any) -> dict[str, Any]:
     if value is None:
         return {}

@@ -234,6 +234,11 @@ class AistudioWireCodec:
         if sanitize_plain_text and not model_defaults.is_image_model:
             request.generation_config.sanitize_for_plain_text()
             request.generation_config.enable_default_thinking()
+            # 显式 thinking_config（下游传入的思考等级）优先级最高：sanitize 会把
+            # thinking_config 置空并重置为默认 HIGH，此处重新应用调用方的等级。
+            explicit_thinking = (generation_config_overrides or {}).get("thinking_config")
+            if explicit_thinking is not None:
+                request.generation_config.thinking_config = explicit_thinking
 
         if safety_off:
             request.safety_settings = [[None, None, cat, 5] for cat in [7, 8, 9, 10]]

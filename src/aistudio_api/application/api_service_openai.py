@@ -27,7 +27,12 @@ from aistudio_api.application.api_service_common import (
     try_switch_on_auth_failure,
     validate_image_request_options,
 )
-from aistudio_api.application.chat_service import cleanup_files, normalize_chat_request, normalize_openai_tools
+from aistudio_api.application.chat_service import (
+    cleanup_files,
+    normalize_chat_request,
+    normalize_openai_tools,
+    resolve_openai_thinking_config,
+)
 from aistudio_api.domain.errors import AccountAuthExpired, AistudioError, AuthError, RequestError, UsageLimitExceeded
 from aistudio_api.infrastructure.gateway.client import AIStudioClient
 from aistudio_api.infrastructure.gateway.model_defaults import resolve_model_defaults
@@ -68,6 +73,11 @@ async def handle_chat(req: ChatRequest, client: AIStudioClient):
                             is_image_model=model_defaults.is_image_model,
                         )
 
+                thinking_config = resolve_openai_thinking_config(req)
+                generation_config_overrides = (
+                    {"thinking_config": thinking_config} if thinking_config is not None else None
+                )
+
                 if req.stream:
                     include_usage = True
                     if req.stream_options is not None:
@@ -86,6 +96,7 @@ async def handle_chat(req: ChatRequest, client: AIStudioClient):
                         top_k=req.top_k,
                         max_tokens=req.max_tokens,
                         tools=tools,
+                        generation_config_overrides=generation_config_overrides,
                     )
 
                 output = await client.generate_content(
@@ -103,6 +114,7 @@ async def handle_chat(req: ChatRequest, client: AIStudioClient):
                     top_k=req.top_k,
                     max_tokens=req.max_tokens,
                     tools=tools,
+                    generation_config_overrides=generation_config_overrides,
                     sanitize_plain_text=True,
                 )
 
@@ -270,6 +282,7 @@ def _build_streaming_response(
     top_k: int | None = None,
     max_tokens: int | None = None,
     tools: list[list] | None = None,
+    generation_config_overrides: dict | None = None,
 ) -> StreamingResponse:
     async def stream_response():
         busy_lock = runtime_state.busy_lock
@@ -301,6 +314,7 @@ def _build_streaming_response(
                             top_k=top_k,
                             max_tokens=max_tokens,
                             tools=tools,
+                            generation_config_overrides=generation_config_overrides,
                             force_refresh_capture=stream_attempt > 0,
                         ):
                             has_yielded_data = True

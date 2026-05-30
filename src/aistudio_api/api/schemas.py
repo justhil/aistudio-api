@@ -53,6 +53,9 @@ class ChatRequest(BaseModel):
     max_tokens: Optional[int] = None
     tools: Optional[list[OpenAITool]] = None
     stream_options: "StreamOptions | None" = None
+    reasoning_effort: Optional[str] = None
+    thinking: Optional[str | dict[str, Any]] = None
+    reasoning: Optional[dict[str, Any]] = None
 
 
 class StreamOptions(BaseModel):

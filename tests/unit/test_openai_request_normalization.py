@@ -201,3 +201,37 @@ def test_openai_tools_with_ref_and_nullable_union_do_not_crash():
     properties = {name: value for name, value in schema[6]}
     assert properties["city"] == [1]
     assert properties["filter"][0] == 6
+
+
+def test_resolve_openai_thinking_config_supports_multiple_param_styles():
+    from aistudio_api.application.chat_service import resolve_openai_thinking_config
+
+    def cfg(**kw):
+        req = ChatRequest(model="gemini-3.5-flash", messages=[{"role": "user", "content": "hi"}], **kw)
+        return resolve_openai_thinking_config(req)
+
+    # wire = [mode, None, None, level]; ThinkingLevel LOW=1 MEDIUM=2 HIGH=3 MINIMAL=4
+    assert cfg(reasoning_effort="high") == [1, None, None, 3]
+    assert cfg(reasoning_effort="low") == [1, None, None, 1]
+    assert cfg(reasoning_effort="minimal") == [1, None, None, 4]
+    assert cfg(thinking="medium") == [1, None, None, 2]
+    assert cfg(thinking={"thinkingLevel": "high"}) == [1, None, None, 3]
+    assert cfg(thinking={"type": "enabled", "budget_tokens": 20000}) == [1, None, None, 3]
+    assert cfg(thinking={"type": "enabled", "budget_tokens": 1000}) == [1, None, None, 1]
+    assert cfg(reasoning={"effort": "medium"}) == [1, None, None, 2]
+    assert cfg() is None
+    assert cfg(reasoning_effort="bogus") is None
+
+
+def test_openai_responses_emit_reasoning_content_field():
+    from aistudio_api.api.responses import chat_completion_response, sse_chunk
+    import json
+
+    resp = chat_completion_response(model="m", content="answer", thinking="reasoned")
+    msg = resp.choices[0].message.model_dump(exclude_none=True)
+    assert msg["reasoning_content"] == "reasoned"
+    assert "thinking" not in msg
+
+    delta = json.loads(sse_chunk("id", "m", "", thinking="t").split("data: ", 1)[1])["choices"][0]["delta"]
+    assert delta["reasoning_content"] == "t"
+    assert "thinking" not in delta
