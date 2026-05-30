@@ -114,3 +114,28 @@ def test_internal_tool_history_filter_handles_split_markers():
     assert _filter_internal_tool_history_delta("_tool_history>secret", state=state) == ""
     assert _filter_internal_tool_history_delta("</internal_anthropic_tool", state=state) == ""
     assert _filter_internal_tool_history_delta("_history> done", state=state, final=True) == " done"
+
+
+def test_function_response_encodes_value_types_to_correct_proto_slots():
+    from aistudio_api.infrastructure.gateway.wire_types import AistudioPart
+
+    resp = {"i": 1, "f": 1.5, "b": True, "s": "x", "n": None, "lst": [1, "y"], "obj": {"k": 2}}
+    part = AistudioPart(function_response=("tool", resp, "call_1"))
+    fields = dict(part.to_wire()[11][1][0])
+
+    assert fields["i"] == [None, 1]            # number_value (index 1)
+    assert fields["f"] == [None, 1.5]          # number_value
+    assert fields["b"] == [None, None, None, True]  # bool_value (index 3)
+    assert fields["s"] == [None, None, "x"]    # string_value (index 2)
+    assert fields["n"] == [0]                  # null_value (index 0)
+    assert fields["lst"] == [None, None, None, None, None, [[[None, 1], [None, None, "y"]]]]  # list_value (index 5)
+    assert fields["obj"] == [None, None, None, None, [[["k", [None, 2]]]]]  # struct_value (index 4)
+
+
+def test_function_call_args_encode_numeric_values():
+    from aistudio_api.infrastructure.gateway.wire_types import AistudioPart
+
+    part = AistudioPart(function_call=("calc", {"x": 10, "ok": False}, "c1"))
+    fields = dict(part.to_wire()[10][1][0])
+    assert fields["x"] == [None, 10]
+    assert fields["ok"] == [None, None, None, False]

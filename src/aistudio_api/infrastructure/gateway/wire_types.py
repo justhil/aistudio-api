@@ -269,18 +269,36 @@ class AistudioPart:
         return [None, self.text]
 
 
+def _encode_wire_struct(value: dict) -> list:
+    # google.protobuf.Struct: { fields: map<string, Value> }
+    # JSPB index 0 holds the repeated [key, Value] entries.
+    return [[[key, _encode_wire_value(val)] for key, val in value.items()]]
+
+
 def _encode_wire_args(value):
     if isinstance(value, dict):
-        return [[[key, _encode_wire_value(val)] for key, val in value.items()]]
+        return _encode_wire_struct(value)
     return value
 
 
 def _encode_wire_value(value):
+    # google.protobuf.Value JSPB layout (index = field number - 1):
+    #   0 null_value, 1 number_value, 2 string_value,
+    #   3 bool_value, 4 struct_value, 5 list_value
+    if value is None:
+        return [0]
+    if isinstance(value, bool):
+        return [None, None, None, value]
+    if isinstance(value, (int, float)):
+        return [None, value]
+    if isinstance(value, str):
+        return [None, None, value]
     if isinstance(value, dict):
-        return [None, _encode_wire_args(value)]
+        return [None, None, None, None, _encode_wire_struct(value)]
     if isinstance(value, list):
-        return [None, None, [_encode_wire_value(item) for item in value]]
-    return [None, None, value]
+        # google.protobuf.ListValue: { values: repeated Value } -> JSPB index 0
+        return [None, None, None, None, None, [[_encode_wire_value(item) for item in value]]]
+    return [None, None, str(value)]
 
 
 @dataclass
